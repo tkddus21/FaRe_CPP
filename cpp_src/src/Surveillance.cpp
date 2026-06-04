@@ -16,7 +16,7 @@ Surveillance::Surveillance(const Grid& grid_map, int surveillance_range, uint8_t
 SurveillanceResult Surveillance::surveillance(int iteration, const std::vector<Point>& frontiers,
                                              const Grid& graph) {
     double max_area = 0;
-    Point selected_frontier;
+    Point selected_frontier = frontiers[0];  // Initialize to first frontier
     Grid best_graph = graph;
     double best_ori = 0;
     

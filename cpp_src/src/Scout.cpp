@@ -17,9 +17,9 @@ FrontierResult Scout::computeFOV(const Grid& grid_map, const Point& start_pos,
     for (double base_angle : base_angles) {
         Grid grid = grid_map;
         
-        // Convert angles to radians
-        double start_rad = base_angle * M_PI / 180.0;
-        double end_rad = (base_angle + fov_angle) * M_PI / 180.0;
+        // Convert angles to radians and create FOV sector
+        double start_rad = (base_angle - fov_angle / 2.0) * M_PI / 180.0;
+        double end_rad = (base_angle + fov_angle / 2.0) * M_PI / 180.0;
         
         // Create angle samples
         std::vector<double> angles;
@@ -28,8 +28,8 @@ FrontierResult Scout::computeFOV(const Grid& grid_map, const Point& start_pos,
             angles.push_back(angle);
         }
         
-        int y_start = start_pos.first;
-        int x_start = start_pos.second;
+        int x_start = start_pos.first;
+        int y_start = start_pos.second;
         
         // Ray casting for FOV computation
         for (double angle : angles) {

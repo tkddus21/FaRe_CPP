@@ -32,10 +32,10 @@ struct Config {
         , surveillance_range(100)
         , way_point_dropout(0)
         , output_dir("./output")
-        , pgm_filename("/map.pgm")
-        , yaml_filename("/map.yaml")
+        , pgm_filename("./maps/map.pgm")
+        , yaml_filename("./maps/map.yaml")
     {
-        starting_position.push_back({356, 33});
+        starting_position.push_back({375, 262});
         optimizer_params.wp_threshold = 0.3;
         optimizer_params.num_iterations = 5;
     }
