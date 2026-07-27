@@ -8,7 +8,7 @@ import os
 
 config = {
 
-    "starting_position": [(356, 33)],
+    "starting_position": [(289, 343)],
 
     "explored_value": 150, # update cells in fov with explored value
 
@@ -22,11 +22,11 @@ config = {
 
     "way_point_dropout": 0,  # Waypoint dropout
 
-    "output_dir": "", # give path to save results
+    "output_dir": "/home/tkddus21/catkin_ws/src/FaRe_CPP/FaRe/results", # give path to save results
 
-    "pgm_filename": "/map.pgm", #path where occupancy map is saved
+    "pgm_filename": "/home/tkddus21/catkin_ws/src/aws-robomaker-small-house-world/maps/turtlebot3_waffle_pi/map.pgm", #path where occupancy map is saved
 
-    "yaml_filename": "/map.yaml", #path for yaml data
+    "yaml_filename": "/home/tkddus21/catkin_ws/src/aws-robomaker-small-house-world/maps/turtlebot3_waffle_pi/map.yaml", #path for yaml data
 
     "optimizer_params": {
 

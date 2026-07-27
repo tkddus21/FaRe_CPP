@@ -23,7 +23,7 @@ class Scout:
         
         base_angles = [0, 180, 270, 90]  # Angles for N, S, W, E
         best_grid = None
-        max_area = 0
+        max_area = -1
         best_angle = None
 
         for base_angle in base_angles:
@@ -52,6 +52,9 @@ class Scout:
         return best_grid, best_angle*(math.pi / 180)
 
     def find_frontier_cells(self,grid_map, explored_value, unexplored_value, obstacle_value=0, buffer_distance=4):
+        # buffer_distance only checks distance to the *nearest* obstacle cell, not corridor
+        # width along the robot's actual path — see README "Known Limitations" for details
+        # (waypoints can land in gaps too tight for the robot's real footprint + costmap inflation).
         rows, cols = grid_map.shape
         frontier_cells = []
 

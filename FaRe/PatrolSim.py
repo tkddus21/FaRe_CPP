@@ -5,6 +5,7 @@ import actionlib
 from geometry_msgs.msg import PoseStamped
 from move_base_msgs.msg import MoveBaseAction, MoveBaseGoal
 from nav_msgs.msg import OccupancyGrid
+from tf.transformations import quaternion_from_euler
 import yaml
 import os
 from config import config
@@ -26,26 +27,38 @@ def send_goal(x, y, theta):
 
     goal.target_pose.pose.position.x = x
     goal.target_pose.pose.position.y = y
-    goal.target_pose.pose.orientation.z = theta  
-    goal.target_pose.pose.orientation.w = 1.0 
+    q = quaternion_from_euler(0, 0, theta)
+    goal.target_pose.pose.orientation.x = q[0]
+    goal.target_pose.pose.orientation.y = q[1]
+    goal.target_pose.pose.orientation.z = q[2]
+    goal.target_pose.pose.orientation.w = q[3]
 
     client.send_goal(goal)
     wait = client.wait_for_result()
 
     if not wait:
         rospy.logerr("Failed to reach the goal")
-    else:
+    elif client.get_state() == actionlib.GoalStatus.SUCCEEDED:
         rospy.loginfo("Reached the goal")
+    else:
+        rospy.logwarn("Goal did not succeed, status: %s", client.get_state())
 
 
 def grid_to_world_coords(wp, map_data):
     resolution = map_data['resolution']
     origin = map_data['origin']
-    
+    map_height = map_generator.load_pgm(pgm_filename).shape[0]
+
+    # FaRe stores waypoints as (row, col) i.e. (y_pixel, x_pixel), matching
+    # numpy's array[row, col] indexing used throughout Scout_Multi_Processing.py.
+    # ROS map_server's pgm convention has row 0 at the TOP of the image, but the
+    # map origin refers to the BOTTOM-LEFT pixel, so the row axis must be
+    # flipped when converting to world y (row and col were previously swapped
+    # here with no flip, sending goals to the wrong physical location).
     world_coords = []
-    for cell in wp:
-        x = cell[0] * resolution + origin[0]
-        y = cell[1] * resolution + origin[1]
+    for row, col in wp:
+        x = col * resolution + origin[0]
+        y = (map_height - 1 - row) * resolution + origin[1]
         world_coords.append((x, y))
     return world_coords
 
@@ -61,8 +74,11 @@ def patrol():
     world_waypoints = grid_to_world_coords(wp, map_data)
     try:
         for i, (x, y) in enumerate(world_waypoints):
-            rospy.loginfo(f"Sending goal {i+1}/{len(world_waypoints)}: ({x}, {y}, {ori[i]})")
-            send_goal(x, y, ori[i])
+            # wp includes a final "return to start" point with no matching
+            # entry in ori (one shorter); reuse the last known orientation for it.
+            theta = ori[i] if i < len(ori) else ori[-1]
+            rospy.loginfo(f"Sending goal {i+1}/{len(world_waypoints)}: ({x}, {y}, {theta})")
+            send_goal(x, y, theta)
 
         rospy.loginfo("Patrolling is finished")
 
