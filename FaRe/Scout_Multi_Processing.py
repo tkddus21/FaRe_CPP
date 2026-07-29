@@ -19,29 +19,35 @@ class Scout:
     def __init__(self):
         pass
 
+    def cast_fov(self, grid_map, start_pos, radius, base_angle, fov_angle=90):
+        """Ray-casts one FOV sector centred on base_angle (degrees), marking visible cells."""
+        grid = np.copy(grid_map)
+        angles = np.deg2rad(np.linspace(base_angle - fov_angle / 2, base_angle + fov_angle / 2, num=400))
+        y_start, x_start = start_pos  # Start position interpreted as (y, x)
+
+        for angle in angles:
+            for r in range(1, radius + 1):
+                x = int(x_start + r * np.cos(angle))
+                y = int(y_start + r * np.sin(angle))
+                if 0 <= x < grid.shape[1] and 0 <= y < grid.shape[0]:
+                    if grid[y, x] == 0:  # Occupied, block visibility
+                        break
+                    elif grid[y, x] == 254:  # Unoccupied, update to visible
+                        grid[y, x] = 150
+                else:
+                    break
+
+        return grid
+
     def fov(self, grid_map, start_pos, radius, fov_angle=90):
-        
+
         base_angles = [0, 180, 270, 90]  # Angles for N, S, W, E
         best_grid = None
         max_area = -1
         best_angle = None
 
         for base_angle in base_angles:
-            grid = np.copy(grid_map)
-            angles = np.deg2rad(np.linspace(base_angle - fov_angle / 2, base_angle + fov_angle / 2, num=400))
-            y_start, x_start = start_pos  # Start position interpreted as (y, x)
-
-            for angle in angles:
-                for r in range(1, radius + 1):
-                    x = int(x_start + r * np.cos(angle))
-                    y = int(y_start + r * np.sin(angle))
-                    if 0 <= x < grid.shape[1] and 0 <= y < grid.shape[0]:
-                        if grid[y, x] == 0:  # Occupied, block visibility
-                            break
-                        elif grid[y, x] == 254:  # Unoccupied, update to visible
-                            grid[y, x] = 150
-                    else:
-                        break
+            grid = self.cast_fov(grid_map, start_pos, radius, base_angle, fov_angle)
 
             explored_area = np.sum(grid == 150)
             if explored_area > max_area:

@@ -34,7 +34,15 @@ config = {
 
         "num_iterations": 5
 
-    } # grasp threshold and num_of iterations
+    }, # grasp threshold and num_of iterations
+
+    # Matches TURTLEBOT3_MODEL=burger, whose costmap footprint half-width is 0.105 m
+    # Matches TURTLEBOT3_MODEL=waffle_pi, whose costmap footprint half-width is 0.155 m
+    # (turtlebot3_navigation/param/costmap_common_params_burger.yaml). The map above is
+    # the waffle_pi one but geometry-independent, so burger stays authoritative here.
+    "robot_radius": 0.155,  # metres
+
+    "trash_detection_range": 5.0, # metres; shorter than surveillance_range, which is optimistic for recognising objects
 
 }
 

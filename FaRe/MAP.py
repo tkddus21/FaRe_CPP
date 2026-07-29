@@ -21,9 +21,10 @@ class Map_generator():
 
     def convert_map_to_rgb(self,grid_map, frontiers):
         rgb_map = np.zeros((grid_map.shape[0], grid_map.shape[1], 3), dtype=np.uint8)
-        rgb_map[grid_map == 0] = [0, 0, 255]  
-        rgb_map[grid_map == 205] = [255,255,255]  
+        rgb_map[grid_map == 0] = [0, 0, 255]
+        rgb_map[grid_map == 205] = [255,255,255]
         rgb_map[grid_map == 254] = [0, 255, 0]
+        rgb_map[grid_map == config['explored_value']] = [255, 140, 0]
         if frontiers == True:
             rgb_map[grid_map == 255] == [51, 68, 255]
         return rgb_map
@@ -81,8 +82,42 @@ class Map_generator():
         plt.show()
 
     def estimate_area(self,grid_map, yaml_data,state):
-   
+
         unoccupied_cells = np.sum(grid_map == state)
         resolution = yaml_data.get("resolution", 1)
         area_per_cell = resolution ** 2
         return unoccupied_cells * area_per_cell
+
+    def report_coverage(self, grid_map, coverage_grid, yaml_data, output_dir):
+        """Quantifies and renders how much free space the planned waypoints' FOV actually saw.
+
+        `coverage_grid` is the accumulated grid from the final planning iteration, where
+        cells seen by any waypoint's FOV carry `explored_value`.
+        """
+        explored_value = config['explored_value']
+        unexplored_value = config['unexplored_value']
+
+        free_area = self.estimate_area(grid_map, yaml_data, unexplored_value)
+        covered_area = self.estimate_area(coverage_grid, yaml_data, explored_value)
+        uncovered_area = self.estimate_area(coverage_grid, yaml_data, unexplored_value)
+        percent = 100.0 * covered_area / free_area if free_area else 0.0
+
+        np.save(os.path.join(output_dir, 'coverage_grid.npy'), coverage_grid)
+
+        rgb_map = self.convert_map_to_rgb(coverage_grid, frontiers=False)
+        rgb_map[coverage_grid == unexplored_value] = [255, 0, 0]  # missed free space must stand out
+
+        fig, ax = plt.subplots(figsize=(10, 10))
+        ax.imshow(rgb_map)
+        ax.set_title(
+            f'Sensor coverage: {covered_area:.1f} / {free_area:.1f} sq.m ({percent:.1f}%)\n'
+            'orange = covered, red = missed free space, blue = obstacle'
+        )
+        fig.savefig(os.path.join(output_dir, 'coverage_map.png'), dpi=200)
+        plt.close(fig)
+
+        print(f'coverage: {covered_area:.1f}/{free_area:.1f} sq.mtrs ({percent:.1f}%), '
+              f'missed: {uncovered_area:.1f} sq.mtrs')
+
+        return {'free_area': free_area, 'covered_area': covered_area,
+                'uncovered_area': uncovered_area, 'percent': percent}

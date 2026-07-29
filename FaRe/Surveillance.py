@@ -33,25 +33,25 @@ def main():
     wp = []
     ori = []
     for item in goals:
-        iteration = item['iteration']
-        goal = item['goals']['goal']
-        orient = item['goals']['orientation']
-        graph = item['graph']
-        frontiers = item['frontiers']  
-        title = f'Iteration {iteration} - Goal: {goal}'
-        wp.append(goal)
-        ori.append(orient)
-        
-        
-        #map_generator.plot_rgb_map(graph, goal, title, frontiers =True) #save_fig = iteration )
+        wp.append(item['goals']['goal'])
+        ori.append(item['goals']['orientation'])
+
+    # Last iteration's graph is the union of every waypoint's FOV, i.e. the coverage map
+    coverage_grid = goals[-1]['graph']
+
     t_c_rot = sum(ori) # total cumulative rotations
     resolution = yaml_data['resolution'] # resolution of grid cell
     optimizer = WayPointOptimizer(wp, 0.3, 5) # initializes waypoint optimization object
-    best_wp =optimizer.run() #optimizes waypoints
+    order = optimizer.run() # visiting order as indices into wp
+    best_wp = [wp[i] for i in order]
+    best_ori = [ori[i] for i in order]
     with open(file_path, 'w') as f:
         f.write(f"wp = {best_wp}\n")
-        f.write(f"ori = {ori}\n")
-    metrics = calculate_and_plot_path(grid_map,wp,best_wp,resolution,t_c_rot,output_dir)
+        f.write(f"ori = {best_ori}\n")
+
+    coverage = map_generator.report_coverage(grid_map, coverage_grid, yaml_data, output_dir)
+
+    metrics = calculate_and_plot_path(grid_map,wp,best_wp,resolution,t_c_rot,output_dir,coverage=coverage)
     print(metrics)
     
 if __name__ == '__main__':
