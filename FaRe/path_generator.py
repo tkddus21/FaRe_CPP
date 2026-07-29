@@ -111,7 +111,7 @@ goals_transformed = [
 ]
 #goals1 = [(350, 67), (315, 102), (311, 102), (295, 108), (310, 152), (317, 152), (327, 154), (343, 247), (331, 251), (308, 297), (320, 335), (310, 373), (300, 371), (287, 420), (225, 431), (233, 408), (198, 384), (229, 349), (274, 379), (271, 337), (270, 331), (274, 313), (231, 299), (162, 330), (153, 290), (145, 215), (183, 228), (185, 228), (193, 258), (208, 254), (242, 265), (259, 215), (234, 210), (222, 185), (273, 177), (269, 164), (253, 129), (219, 98), (207, 68), (278, 77), (350, 67)]
 
-def calculate_and_plot_path(map_data, goals, best_path, resolution, cummulative_rotation, output_dir, before_wpo=True, after_wpo=True):
+def calculate_and_plot_path(map_data, goals, best_path, resolution, cummulative_rotation, output_dir, before_wpo=True, after_wpo=True, coverage=None):
     total_path_length = 0
     total_path_length1 = 0
 
@@ -150,6 +150,10 @@ def calculate_and_plot_path(map_data, goals, best_path, resolution, cummulative_
     
     # Save metrics to CSV
     metrics = ['path_length', total_path_length1, 'cummulative rotations', cummulative_rotation, 'revisit_time', t_t]
+    if coverage is not None:
+        metrics += ['coverage_percent', coverage['percent'],
+                    'covered_area', coverage['covered_area'],
+                    'free_area', coverage['free_area']]
     csv_file = f'{output_dir}/metrics.csv'
     with open(csv_file, 'w', newline='') as file:
         writer = csv.writer(file)

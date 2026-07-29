@@ -1,0 +1,35 @@
+# Overrides turtlebot3_navigation's stock costmap_common_params_<model>.yaml.
+# Values below were measured on the AWS Small House map, not guessed.
+
+# --- The one that actually fixes the wedging -----------------------------
+# The burger footprint is 0.105 m half-width. This map has a pinch between the
+# exercise ball and the weight bench with only 0.112 m clearance -- 7 mm wider
+# than the robot. The global planner treats that thread as passable and routes
+# through it; the robot wedges there and never recovers, so every later goal
+# aborts too. Padding the footprint raises the inscribed radius, so the costmap
+# marks the pinch impassable and the planner takes the much wider way around.
+#
+# Padding 0.020 -> effective radius 0.125 m, the LOW end of the usable window:
+#   below 0.112   pinch stays open, robot wedges
+#   0.125 - 0.185 pinch blocked AND all 26 waypoints still fit and stay in one
+#                 connected component
+#   above 0.205   the map splits and some waypoints become unreachable
+#
+# Take the low end, not the middle. Padding shrinks every corridor, not just the
+# bad pinch: 0.045 (effective 0.150 m) did block the pinch, but then wedged the
+# robot at a 0.180 m spot it used to drive through and the run got worse
+# (4/26 goals vs 7/26). 0.020 buys the pinch without spending that margin.
+# Re-derive with FaRe/diagnose_waypoints.py if the map or the robot changes.
+footprint_padding: 0.020
+
+# --- Supporting changes --------------------------------------------------
+# Stock ships inflation_radius: 1.0, far too large here: measured median
+# free-space clearance is 0.552 m, so over half the navigable area sits inside
+# the gradient and almost nothing is genuinely cheap. Symptom was DWA
+# "failed to produce path" plus rotate recovery refusing to turn with
+# "potential collision, Cost: -1.00" while the robot was physically clear.
+inflation_radius: 0.30
+
+# Softer falloff so cost decays over the shorter radius instead of staying
+# near-lethal right up to the edge.
+cost_scaling_factor: 5.0
