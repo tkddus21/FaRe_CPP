@@ -3,6 +3,7 @@ import matplotlib.pyplot as plt
 import yaml
 from PIL import Image
 from path_optimizer import WayPointOptimizer
+from traversability import TraversabilityGraph
 
 import csv
 
@@ -30,48 +31,6 @@ def load_yaml(yaml_file_path):
     with open(yaml_file_path, 'r') as file:
         return yaml.safe_load(file)
 
-def heuristic(a, b):
-    """Calculate the Manhattan distance between two points."""
-    return abs(a[0] - b[0]) + abs(a[1] - b[1])
-
-def a_star(map_data, start, goal, free_space=[254]):
-    neighbors = [(0, 1), (1, 0), (0, -1), (-1, 0)]  # 4-way connectivity
-    open_set = {start}
-    came_from = {}
-    
-    g_score = {start: 0}
-    f_score = {start: heuristic(start, goal)}
-    
-    while open_set:
-        current = min(open_set, key=lambda x: f_score.get(x, np.inf))
-        
-        if current == goal:
-            path = []
-            while current in came_from:
-                path.append(current)
-                current = came_from[current]
-            path.append(start)  # Optional: include start in path
-            return path[::-1]  # Return reversed path
-        
-        open_set.remove(current)
-        for dx, dy in neighbors:
-            neighbor = (current[0] + dx, current[1] + dy)
-            
-            # Check if within bounds and navigable
-            if 0 <= neighbor[0] < map_data.shape[0] and 0 <= neighbor[1] < map_data.shape[1]:
-                if map_data[neighbor[0], neighbor[1]] not in free_space:
-                    continue
-                
-                tentative_g_score = g_score[current] + 1  # Cost = 1 per step
-                
-                if neighbor not in g_score or tentative_g_score < g_score[neighbor]:
-                    came_from[neighbor] = current
-                    g_score[neighbor] = tentative_g_score
-                    f_score[neighbor] = tentative_g_score + heuristic(neighbor, goal)
-                    open_set.add(neighbor)
-    
-    return [] 
-    
 def convert_pgm_to_binary_custom(image_array):
     """
     Convert a .pgm file to a binary .png file where value 254 is converted to white (255)
@@ -111,34 +70,51 @@ goals_transformed = [
 ]
 #goals1 = [(350, 67), (315, 102), (311, 102), (295, 108), (310, 152), (317, 152), (327, 154), (343, 247), (331, 251), (308, 297), (320, 335), (310, 373), (300, 371), (287, 420), (225, 431), (233, 408), (198, 384), (229, 349), (274, 379), (271, 337), (270, 331), (274, 313), (231, 299), (162, 330), (153, 290), (145, 215), (183, 228), (185, 228), (193, 258), (208, 254), (242, 265), (259, 215), (234, 210), (222, 185), (273, 177), (269, 164), (253, 129), (219, 98), (207, 68), (278, 77), (350, 67)]
 
-def calculate_and_plot_path(map_data, goals, best_path, resolution, cummulative_rotation, output_dir, before_wpo=True, after_wpo=True, coverage=None):
+def _trace(graph, waypoints):
+    """Routes consecutive waypoints. Returns (cell paths, total metres, bottlenecks)."""
+    paths, bottlenecks = [], []
+    total = 0.0
+
+    for start, goal in zip(waypoints, waypoints[1:]):
+        path, length = graph.route(start, goal)
+        if not path:
+            print(f'  no drivable route from {start} to {goal} -- the patrol will stall here')
+            continue
+        paths.append(path)
+        bottlenecks.append(graph.bottleneck(path))
+        total += length
+
+    return paths, total, bottlenecks
+
+
+def calculate_and_plot_path(map_data, goals, best_path, resolution, cummulative_rotation, output_dir, before_wpo=True, after_wpo=True, coverage=None, graph=None):
+    """Draws the tour and reports what it costs to drive.
+
+    Routing goes through TraversabilityGraph, so the path avoids gaps the robot's
+    footprint cannot fit through. Planning on the raw grid instead produced paths
+    straight through furniture that move_base then refused to follow.
+    """
+    if graph is None:
+        graph = TraversabilityGraph(map_data, resolution)
+
     total_path_length = 0
     total_path_length1 = 0
+    bottlenecks = []
 
     fig, ax = plt.subplots(figsize=(10, 10))
     ax.imshow(map_data, cmap='gray')
-    
-    # Copy grids for before and after WPO
-    grid1 = np.copy(map_data)
-    grid2 = np.copy(map_data)
 
-    # Calculate and plot path before WPO
     if before_wpo:
-        for i in range(len(goals) - 1):
-            path = a_star(grid1, goals[i], goals[i+1])
-            if path:
-                total_path_length += len(path) * resolution
-                y, x = zip(*path)
-                ax.plot(x, y, color='dimgray', alpha=0.5)
-    
-    # Calculate and plot path after WPO
+        paths, total_path_length, _ = _trace(graph, goals)
+        for path in paths:
+            y, x = zip(*path)
+            ax.plot(x, y, color='dimgray', alpha=0.5)
+
     if after_wpo:
-        for i in range(len(best_path) - 1):
-            path1 = a_star(grid2, best_path[i], best_path[i+1])
-            if path1:
-                total_path_length1 += len(path1) * resolution
-                y1, x1 = zip(*path1)
-                ax.plot(x1, y1, color='r')
+        paths, total_path_length1, bottlenecks = _trace(graph, best_path)
+        for path in paths:
+            y1, x1 = zip(*path)
+            ax.plot(x1, y1, color='r')
 
     # Plotting goals
     for goal in goals:
@@ -147,22 +123,25 @@ def calculate_and_plot_path(map_data, goals, best_path, resolution, cummulative_
     # Calculate revisit time
     t_t = revisit_time_(total_path_length1, cummulative_rotation, linear_speed=0.3, rotational_speed=0.52)
     print(f'path_length: {total_path_length1}, cummulative rotations: {cummulative_rotation}, revisit_time: {t_t}')
-    
+
     # Save metrics to CSV
     metrics = ['path_length', total_path_length1, 'cummulative rotations', cummulative_rotation, 'revisit_time', t_t]
     if coverage is not None:
         metrics += ['coverage_percent', coverage['percent'],
                     'covered_area', coverage['covered_area'],
                     'free_area', coverage['free_area']]
+    if bottlenecks:
+        # How much room the tightest point of the tour leaves. Goal failures in
+        # Gazebo clustered at the low end of this, though they are not predicted
+        # by it alone -- see README "Known Limitations".
+        metrics += ['min_bottleneck_m', round(min(bottlenecks), 3)]
     csv_file = f'{output_dir}/metrics.csv'
     with open(csv_file, 'w', newline='') as file:
         writer = csv.writer(file)
         writer.writerow(metrics)
-    
-    # Save the plot
-    plt.legend()
+
     plt.savefig(f'{output_dir}/path.png', dpi=200)
-    plt.show()
+    plt.close(fig)
     return metrics
 #before_wpo = True
 #after_wpo = True

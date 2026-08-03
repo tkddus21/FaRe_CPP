@@ -121,7 +121,7 @@ fi
 
 # --- collect the artefacts this run produced -------------------------------
 for f in patrol_log.csv wp_ori_data.txt metrics.csv waypoint_clearance.csv \
-         coverage_map.png coverage_grid.npy path.png; do
+         segment_clearance.csv coverage_map.png coverage_grid.npy path.png; do
   [ -f "$RESULTS_DIR/$f" ] && cp "$RESULTS_DIR/$f" "$RUN_DIR/"
 done
 

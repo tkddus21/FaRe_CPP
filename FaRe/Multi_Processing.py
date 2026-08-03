@@ -2,8 +2,8 @@ from MAP import Map_generator
 
 map_generator = Map_generator()
 
-def process_frontier(graph, frontier, scout, surveillance_range, free_cells, yaml_data, state):
-    sub_graph , angle = scout.fov(graph, frontier, surveillance_range)
+def process_frontier(graph, frontier, scout, surveillance_range, free_cells, yaml_data, state, fov_angle):
+    sub_graph , angle = scout.fov(graph, frontier, surveillance_range, fov_angle)
     area = map_generator.estimate_area(sub_graph, yaml_data, state)  # Assuming map_generator is defined
     return {
         'frontier': frontier,

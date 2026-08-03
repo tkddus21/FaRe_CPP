@@ -153,7 +153,7 @@ rosbag play --clock -d 5 -r 3 results/<실행폴더>/patrol.bag
 ## 커버리지·탐지 성능 확인
 
 ```bash
-python3 FaRe/diagnose_waypoints.py    # waypoint별 여유공간 vs 로봇 풋프린트
+python3 FaRe/diagnose_waypoints.py    # waypoint별·구간별 여유공간, 직전 실행 결과와 함께 표시
 python3 FaRe/trash_eval.py            # 계획 경로가 배치된 물체를 몇 개나 보는지
 python3 FaRe/trash_eval.py --range 5  # 낙관적인 최대 사거리 기준과 비교
 ```
@@ -163,9 +163,9 @@ python3 FaRe/trash_eval.py --range 5  # 낙관적인 최대 사거리 기준과 
 
 - **`PatrolSim.py` 좌표 변환 (수정됨):** `grid_to_world_coords()`가 row/col을 뒤바꿔 쓰고 `map_server`의 상하 반전(pgm의 row 0 = 이미지 맨 위 = 월드 y의 *최댓값*, 맵 원점은 좌하단 픽셀)을 반영하지 않아 goal이 엉뚱한 위치로 전송됐습니다. 테스트로 확인: 수정 전에는 개활지 맵에서도 모든 waypoint가 실패하거나 엉뚱한 곳에 도달했고, 수정 후 13~14/14가 성공했습니다. 같은 작업에서 함께 고친 것: 잘못된 goal 쿼터니언(실제 yaw 쿼터니언 대신 `orientation.z = theta`), `wait_for_result()`만 믿던 성공 판정(`ABORTED`인 goal에도 `True`를 반환함), 그리고 `wp`(waypoint, 시작점 복귀 지점 포함)가 `ori`(방향)보다 하나 길어서 생기던 `IndexError`.
 
-- **waypoint 여유공간이 로봇 풋프린트를 반영하지 않음 (미해결이나 측정됨):** `FaRe/Scout_Multi_Processing.py`의 `find_frontier_cells()`는 후보 셀이 *가장 가까운* 장애물 셀에서 `buffer_distance`(기본 4셀, 해상도 0.05에서 0.2 m)만큼 떨어져 있는지만 봅니다. 이는 단일 지점 거리 검사일 뿐, 로봇이 실제로 지나야 하는 통로가 충분히 넓은지는 검사하지 않습니다. waypoint별 실제 여유공간은 `FaRe/diagnose_waypoints.py`로 측정할 수 있습니다(거리변환 기반이며 미탐색 영역도 장벽으로 취급).
+- **waypoint 배치가 로봇 몸체를 무시하는 것은 버그가 아니라 논문의 설계입니다:** `FaRe/Scout_Multi_Processing.py`의 `find_frontier_cells()`는 후보 셀이 *가장 가까운* 장애물 셀에서 `buffer_distance`(기본 4셀, 해상도 0.05에서 0.2 m)만큼 떨어져 있는지만 봅니다. 풋프린트는 전혀 보지 않습니다. 논문도 이를 명시합니다 — FaRe는 "로봇의 물리적 치수를 고려하는 대신" 센서 FOV를 풋프린트로 삼고(III장), waypoint 최적화 단계에서는 "계산 복잡도를 피하려고" 맵을 아예 쓰지 않습니다(III-D).
 
-   AWS Small House 맵 실측: **26개 waypoint 전부가 burger 풋프린트를 통과**했고, 최소 여유공간은 0.25 m로 풋프린트 반폭 0.105 m 대비 여유가 있었습니다. 즉 이 맵에서는 배치가 기하학적으로 주행 불가능한 게 아니며, 앞서의 불안정성은 통로 폭이 아니라 위 항목의 좌표/쿼터니언/짝맞춤 버그 때문이었습니다. 그 수정 후 waypoint 5개 순찰은 5/5 `SUCCEEDED`였습니다. 다만 단일 지점 검사라 다른 맵에서는 뚫릴 수 있으므로 이 검사는 유지할 가치가 있습니다.
+   24/26 waffle_pi 실행에서 실측한 결과, 이 추상화가 *goal 지점에서* 치르는 대가는 예상보다 작았습니다. **26개 waypoint 전부가 풋프린트를 통과**했고(최소 0.25 m, 패딩 포함 waffle_pi가 필요한 0.175 m 대비), goal 지점의 여유공간은 실패와 성공을 구분하지 못했습니다 — *실패한* goal 하나는 1.412 m 개활지에 있었습니다. 실패는 goal이 아니라 **이동 중에** 발생하며, 그게 다음 항목의 주제입니다. `FaRe/diagnose_waypoints.py`가 이제 waypoint별과 구간별을 모두 보고합니다.
 
 - **끼임 한 번이 순찰 전체를 무너뜨리던 문제 (수정됨):** 가구가 많은 맵에서는 waypoint *사이를 이동하는 중에* 로봇이 자기 폭과 거의 같은 틈으로 들어가 끼일 수 있습니다. 이때 move_base 자체의 rotate recovery는 동작을 거부하고("can't rotate in place because there is a potential collision. Cost: -1.00"), 로봇은 갇힌 채로 남아 이후 모든 goal이 움직이지 못하는 로봇을 상대로 실패합니다. 이제 `PatrolSim.py`는 `SUCCEEDED`가 아닌 goal 뒤에 `/move_base/clear_costmaps`를 호출하고 `/cmd_vel`로 직접 약 16 cm 후진합니다. move_base가 스스로 할 수 없는 동작입니다. 이 변경 하나로 AWS 하우스 순찰이 7/26에서 20/26으로 올랐습니다.
 
@@ -182,4 +182,16 @@ python3 FaRe/trash_eval.py --range 5  # 낙관적인 최대 사거리 기준과 
 
    셋째 행을 주목하세요. inflation을 낮추거나 풋프린트를 부풀리는 것은 공짜가 아닙니다. 유효 반경 0.150 m까지 패딩하면 문제의 0.112 m 병목은 막히지만, 그 전까지 잘 지나다니던 0.180 m 지점에서 새로 끼였습니다.
 
-- **waypoint 여유공간은 goal 실패를 예측하지 못함 (가설 기각):** `find_frontier_cells()`가 좁은 곳에 waypoint를 놓는다고 의심하기 쉽지만 측정 결과는 다릅니다. 20/26 실행에서 실패한 goal의 여유공간 중앙값은 0.450 m, 성공한 goal은 0.480 m로 통계적으로 구분되지 않았고, *실패한* goal 중 하나는 1.412 m의 개활지에 있었습니다. 26개 waypoint 전부가 풋프린트를 통과합니다. 실패는 **이동 중에** 발생하며, global planner가 waypoint들이 피해 간 병목으로 경로를 잡기 때문입니다. 따라서 수정할 곳은 waypoint 배치가 아니라 navigation 설정과 복구 동작입니다.
+- **오프라인 경로가 점 로봇 기준으로 계산되던 문제 (`FaRe/traversability.py`에서 수정):** 기존 경로 탐색은 모든 자유 셀을 주행 가능으로 보고 4방향으로만 움직였기 때문에, 어떤 로봇도 들어갈 수 없는 틈을 태연히 통과했습니다. 24/26 실행의 waypoint 26개로 실측한 결과 **그 경로는 0.050 m 틈을 비집고 지나갑니다** — waffle_pi는 0.175 m가 필요합니다. `path.png`가 벤치를 관통하던 이유이자, 보고된 `path_length`가 move_base는 결코 따라가지 않을 경로를 설명하던 이유입니다.
+
+   이제 라우팅은 `robot_radius + footprint_padding`만큼 팽창시킨 격자 위에서 이뤄집니다. `launch/costmap_override.yaml`이 move_base에 주는 것과 같은 반경입니다. 여기에 costmap_2d의 inflation 그라디언트로 셀마다 가중치를 줘서, 경계에 딱 붙는 대신 NavfnROS처럼 통로 가운데로 지나가게 했습니다. 같은 waypoint, 두 모델 비교(`results/routing_comparison.png`):
+
+   | | 점 로봇 | 풋프린트 반영 |
+   | --- | --- | --- |
+   | 경로 길이 | 69.60 m | 61.52 m |
+   | 사용한 가장 좁은 틈 | **0.050 m** | 0.200 m |
+   | 틈 중앙값 | 0.250 m | 0.300 m |
+
+   오히려 *짧아진* 이유는 8방향 이동이 4방향의 계단형 낭비를 없애기 때문이며, 그 이득이 가구를 우회하는 비용보다 큽니다. GRASP도 이제 벽을 무시하는 직선거리가 아니라 이 실제 주행 거리로 순서를 정합니다.
+
+- **기하학만으로는 어떤 goal이 실패할지 여전히 예측하지 못함 (미해결):** 풋프린트를 반영해도 모든 waypoint 쌍에 주행 가능한 경로가 있고, 구간별 최협부도 결과를 가르지 못합니다. 실패한 goal 두 개는 0.200 m와 0.292 m였지만, 같은 최협부를 가진 구간들이 성공적으로 주행됐고 성공 구간의 중앙값도 0.320 m에 불과합니다. 좁다는 건 위험 요인이지 예측 변수가 아닙니다. 남은 원인은 런타임 쪽 — DWA의 궤적 탐색, AMCL 잡음, 복구 동작 — 이며, 그래서 `PatrolSim.py`는 계획이 안전하다고 믿는 대신 costmap 초기화 + 후진 복구를 유지합니다. 순찰 후 `FaRe/diagnose_waypoints.py`를 실행하면 `patrol_log.csv`의 결과를 구간별 기하와 나란히 붙여 보여줍니다.

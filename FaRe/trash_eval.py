@@ -50,7 +50,8 @@ def detection_mask(grid_map, wp, ori, radius):
     mask = np.zeros(grid_map.shape, dtype=bool)
     for (row, col), theta in zip(wp, ori):
         # fov() re-picks the best of 4 headings; cast_fov honours the planned one
-        seen = scout.cast_fov(grid_map, (row, col), radius, np.rad2deg(theta))
+        seen = scout.cast_fov(grid_map, (row, col), radius, np.rad2deg(theta),
+                              config['fov_angle'])
         mask |= (seen == explored) & (grid_map == unexplored)
     return mask
 

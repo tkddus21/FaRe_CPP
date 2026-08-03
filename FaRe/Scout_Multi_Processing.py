@@ -86,19 +86,20 @@ class Scout:
 
         return frontier_cells
 class Exploration:
-    def __init__(self, grid_map, surveillance_range, free_cells, state, yaml_data):
+    def __init__(self, grid_map, surveillance_range, free_cells, state, yaml_data, fov_angle=90):
         self.grid_map = grid_map
         self.surveillance_range = surveillance_range
         self.free_cells = free_cells
         self.state = state
         self.yaml_data = yaml_data
-        self.scout = Scout() 
-        print('range:', self.surveillance_range )
+        self.fov_angle = fov_angle
+        self.scout = Scout()
+        print('range:', self.surveillance_range, 'cells, fov:', self.fov_angle, 'deg')
     def surveillance(self, iteration, frontiers, graph, area):
-        
+
         with multiprocessing.Pool() as pool:
             # Prepare arguments for each process
-            args = [(graph, frontier, self.scout, self.surveillance_range, self.free_cells, self.yaml_data, self.state) for frontier in frontiers]
+            args = [(graph, frontier, self.scout, self.surveillance_range, self.free_cells, self.yaml_data, self.state, self.fov_angle) for frontier in frontiers]
 
             # Execute the function in parallel
             results = pool.starmap(process_frontier, args)
@@ -108,7 +109,14 @@ class Exploration:
         selected_frontier, area, graph, ori = max_area_dict['frontier'], max_area_dict['area'], max_area_dict['sub_graph'],max_area_dict['ori']
         
         return selected_frontier, area, graph,ori
-    def set_goals(self, current_pos, explored_value, unexplored_value,steps, frontier_drop_rate):
+    def set_goals(self, current_pos, explored_value, unexplored_value, steps, frontier_drop_rate,
+                  min_coverage_area=None, coverage_epsilon=0.0):
+        """Runs the greedy waypoint selection loop (paper Steps 1-3).
+
+        `steps` caps the iteration count. The paper also stops once the explored
+        area exceeds A_min or the relative area gain per iteration falls below
+        epsilon; pass `min_coverage_area` / `coverage_epsilon` to enable those.
+        """
         total_area = 0
         iteration = 0
         t_time = 0
@@ -130,15 +138,27 @@ class Exploration:
                 print("No more frontiers found. Stopping exploration.")
                 break
             selected_frontier, area, updated_graph,ori = self.surveillance(iteration, frontiers, graph, total_area)
-            total_area = area 
-            iteration += 1 
+            previous_area = total_area
+            total_area = area
+            iteration += 1
             graph = updated_graph
             end_time = time.time()
             area_goals.append({'iteration': iteration, 'goals': {'goal': selected_frontier, 'area': area,'orientation':ori}, 'graph':graph, 'frontiers':frontiers})
             t_time += end_time - start_time
-            
+
             print(f'steps: {iteration} goal : {selected_frontier,ori}   e_area : {int(area)} wp: {len(frontiers)} e_time: {int(end_time - start_time)} seconds t_time = {int(t_time)}  ' )
-            
+
+            # Paper's stopping criteria, checked after the waypoint is kept so the
+            # one that satisfied the criterion still contributes its coverage.
+            if min_coverage_area is not None and total_area > min_coverage_area:
+                print(f'Explored area {total_area:.1f} sq.m exceeds A_min {min_coverage_area}. Stopping.')
+                break
+            if coverage_epsilon > 0 and total_area > 0:
+                relative_gain = (total_area - previous_area) / total_area
+                if relative_gain < coverage_epsilon:
+                    print(f'Relative area gain {relative_gain:.4f} below epsilon {coverage_epsilon}. Stopping.')
+                    break
+
         return area_goals
     def optimize_goals(self,goal_points):
    

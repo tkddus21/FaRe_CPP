@@ -149,7 +149,7 @@ rosbag play --clock -d 5 -r 3 results/<run>/patrol.bag
 ## Verifying coverage and detection
 
 ```bash
-python3 FaRe/diagnose_waypoints.py    # clearance per waypoint vs the robot footprint
+python3 FaRe/diagnose_waypoints.py    # clearance per waypoint AND per segment, joined to the last run's statuses
 python3 FaRe/trash_eval.py            # how many placed objects the planned path would see
 python3 FaRe/trash_eval.py --range 5  # compare against the optimistic full sensor range
 ```
@@ -158,9 +158,9 @@ python3 FaRe/trash_eval.py --range 5  # compare against the optimistic full sens
 ## Known Limitations
 
 - **`PatrolSim.py` coordinate conversion (fixed):** `grid_to_world_coords()` previously transposed row/col and didn't account for `map_server`'s vertical flip (pgm row 0 = top of image = *max* world y, with the map origin at the bottom-left pixel), so goals were sent to the wrong physical location. Confirmed by testing: on an open map every waypoint failed or landed in the wrong spot before the fix, and 13-14/14 succeeded after it. Also fixed in the same pass: an invalid goal quaternion (`orientation.z = theta` instead of a real yaw quaternion), a success check that trusted `wait_for_result()` alone (which returns `True` even for `ABORTED` goals), and an `IndexError` from `wp` (waypoints, includes a final return-to-start point) being one longer than `ori` (orientations).
-- **Waypoint clearance doesn't account for robot footprint (open, but measured):** `find_frontier_cells()` in `FaRe/Scout_Multi_Processing.py` only checks that a candidate cell is `buffer_distance` cells (default 4, i.e. 0.2m at 0.05 resolution) away from the *nearest* obstacle cell — a single-point distance check, not a check that the corridor the robot has to actually drive through is wide enough. Use `FaRe/diagnose_waypoints.py` to measure the real clearance (distance transform, treating unknown space as a barrier too) per waypoint.
+- **Waypoint placement ignores the robot's body, and that is the paper's design, not a bug:** `find_frontier_cells()` in `FaRe/Scout_Multi_Processing.py` only checks that a candidate cell is `buffer_distance` cells (default 4, i.e. 0.2 m at 0.05 m/cell) from the *nearest* obstacle. It never checks the footprint. The paper says so outright — FaRe uses the sensor's field of view as the footprint "instead of considering the robot's physical dimensions" (Sec. III), and drops the map entirely during waypoint optimisation "to avoid computational complexity" (Sec. III-D).
 
-   Measured on the AWS Small House map: **all 26 waypoints cleared the burger footprint**, minimum clearance 0.25 m against a 0.105 m footprint half-width — so on this map the placement is not geometrically undrivable, and the earlier flakiness traced to the coordinate/quaternion/pairing bugs above rather than to gap width. After those fixes a 5-waypoint patrol scored 5/5 `SUCCEEDED`. The check is still worth keeping: it is a single-point test, so a different map can defeat it.
+   Measured over the 24/26 waffle_pi run, that abstraction costs less *at the goal* than expected: **all 26 waypoints cleared the footprint** (minimum 0.25 m, against the 0.175 m a padded waffle_pi needs), and goal clearance did not separate failures from successes — one *failed* goal sat in 1.412 m of open space. The failures happen **in transit**, not at the goal, which is what the next item is about. `FaRe/diagnose_waypoints.py` now reports both, per waypoint and per segment.
 
 - **A single wedge used to kill the whole patrol (fixed):** on cluttered maps the robot can drive into a gap barely wider than itself while *travelling between* waypoints. move_base's own rotate recovery then refuses to act ("can't rotate in place because there is a potential collision. Cost: -1.00"), so the robot stays stuck and every remaining goal aborts against a robot that cannot move. `PatrolSim.py` now calls `/move_base/clear_costmaps` and reverses ~16 cm under direct `/cmd_vel` control after any non-`SUCCEEDED` goal, which move_base cannot do for itself. This one change took the AWS house patrol from 7/26 to 20/26 goals.
 
@@ -177,5 +177,17 @@ python3 FaRe/trash_eval.py --range 5  # compare against the optimistic full sens
 
    Note the third row: lowering inflation or padding the footprint is not a free win. Padding to an effective 0.150 m radius did block the one 0.112 m pinch, but then wedged the robot at a 0.180 m spot it had previously driven through fine.
 
-- **Waypoint clearance does not predict goal failure (hypothesis rejected):** it is tempting to blame `find_frontier_cells()` for placing waypoints in tight spots, but the measurement says otherwise. Over the 20/26 run, failed goals had a median clearance of 0.450 m and successful goals 0.480 m — statistically indistinguishable — and one *failed* goal sat in a 1.412 m open space. Every one of the 26 waypoints cleared the footprint. The failures happen **in transit**, where the global planner routes through pinches the waypoints themselves avoid, so fixing this belongs in the navigation config and in recovery behaviour, not in waypoint placement.
+- **The offline path was planned for a point robot (fixed in `FaRe/traversability.py`):** the old path search treated every free cell as drivable and moved in 4-connected steps, so it happily threaded gaps no robot could enter. Measured on the 26 waypoints of the 24/26 run, **the path it drew squeezed through a 0.050 m gap** — the waffle_pi needs 0.175 m. That is why `path.png` cut straight through the bench, and why the reported `path_length` described a route move_base would never follow.
+
+   Routing now runs on a grid inflated by `robot_radius + footprint_padding`, the same radius `launch/costmap_override.yaml` hands move_base, and weights each cell by costmap_2d's inflation gradient so paths keep to the middle of corridors the way NavfnROS does instead of hugging the boundary. Same waypoints, both models (`results/routing_comparison.png`):
+
+   | | point robot | footprint-aware |
+   | --- | --- | --- |
+   | path length | 69.60 m | 61.52 m |
+   | tightest gap used | **0.050 m** | 0.200 m |
+   | median gap | 0.250 m | 0.300 m |
+
+   It comes out *shorter* because 8-connected steps drop the staircase overhead of 4-connected ones, which more than pays for going around the furniture. GRASP now orders waypoints on these real drivable distances too, instead of straight lines that ignore walls.
+
+- **Geometry still does not predict which goals fail (open):** with the footprint-aware model every waypoint pair has a drivable route, and the tightest point of each segment does not separate outcomes: the two failed goals sat at 0.200 m and 0.292 m, but segments with those same bottlenecks were driven successfully, and the successful median is only 0.320 m. Tightness is a risk factor, not a predictor. What remains is runtime — DWA's trajectory search, AMCL noise, and recovery behaviour — which is why `PatrolSim.py` keeps its costmap-clear-and-reverse recovery rather than relying on the plan being safe. Run `FaRe/diagnose_waypoints.py` after a patrol and it will join `patrol_log.csv` statuses against the per-segment geometry.
    

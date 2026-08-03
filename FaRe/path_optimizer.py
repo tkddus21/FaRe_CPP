@@ -9,14 +9,24 @@ class WayPointOptimizer:
     cannot serve as identities here: duplicate waypoints occur in practice.
     """
 
-    def __init__(self, goals, alpha, max_iterations):
+    def __init__(self, goals, alpha, max_iterations, distance_matrix=None):
         self.goals = goals
         self.alpha = alpha or 0.3
         self.max_iterations = max_iterations or 5
+        self.distance_matrix = distance_matrix
         self.best_solution = None
         self.best_cost = float('inf')
 
     def calculate_distance(self, i, j):
+        """Cost of travelling between two waypoints.
+
+        With a `distance_matrix` this is the real drivable distance. Without one
+        it falls back to the straight line, which ignores walls: measured on the
+        AWS house map that under-reads the actual route by roughly a third, so
+        the tour it picks is optimal for a robot that can walk through furniture.
+        """
+        if self.distance_matrix is not None:
+            return self.distance_matrix[i][j]
         a, b = self.goals[i], self.goals[j]
         return ((a[0] - b[0]) ** 2 + (a[1] - b[1]) ** 2) ** 0.5
 
