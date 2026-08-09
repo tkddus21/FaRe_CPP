@@ -1,0 +1,97 @@
+<launch>
+  <!-- gmapping plus a navigation stack, for building the turtlebot3_house map with
+       FaRe/explore_for_mapping.py instead of driving it by hand.
+
+       This is turtlebot3_slam's gmapping with move_base bolted on, which is what
+       turtlebot3_slam/launch/turtlebot3_frontier_exploration.launch does too - but
+       that file needs the frontier_exploration package, which is not packaged for
+       Noetic. explore_for_mapping.py replaces that one node and nothing else.
+
+       Deliberately no map_server and no AMCL, unlike fare_navigation.launch: gmapping
+       publishes /map itself and owns the map->odom transform while it is running.
+       Starting either of those here would give two publishers for the same thing.
+
+       This is the WHOLE mapping stack: robot_state_publisher, gmapping and
+       move_base. Do NOT run it alongside turtlebot3_slam.launch. Both start nodes
+       under the same names, and roslaunch resolves that by killing the older one -
+       so the second launch silently destroys the first gmapping and the map it had
+       built, then leaves the survivor with no robot_state_publisher, no scan
+       transform, and a /map topic that never publishes again. It only looks like
+       move_base failing to come up.
+
+       Run house_sim.launch first, then this, then explore_for_mapping.py:
+         roslaunch ~/catkin_ws/src/FaRe_CPP/launch/house_mapping.launch open_rviz:=true -->
+
+  <arg name="model" default="$(env TURTLEBOT3_MODEL)" doc="model type [burger, waffle, waffle_pi]"/>
+  <arg name="open_rviz" default="false"/>
+  <arg name="cmd_vel_topic" default="/cmd_vel"/>
+  <arg name="odom_topic" default="odom"/>
+
+  <!-- costmap_override.yaml ships footprint_padding: 0.020, measured for a burger
+       on the AWS map. A waffle_pi is a different shape and its footprint origin
+       sits near the front, so its inscribed radius is only 0.077 m: the costmap
+       marks almost nothing as unconditionally lethal and leaves DWA to check
+       orientation-dependent collisions itself. Exploring the house that way wedged
+       the robot twice, both times rear-first. 0.06 raises the inscribed radius to
+       0.137 m and the circumscribed to 0.317 m, which still clears this house's
+       doorways. -->
+  <arg name="footprint_padding" default="0.06"/>
+
+  <!-- Off, and it is worth saying why it was ever on. The first wedges were
+       rear-first - 0.17 m of rear clearance against a 0.205 m rear overhang - so
+       forbidding reverse looked like the fix. It is not: it just swaps a rear wedge
+       for a nose-in one. With reverse disabled, a robot facing a wall has no move
+       left except rotating in place, which move_base refuses in exactly the tight
+       spots where it is needed ("potential collision, Cost: -1.00"). Measured: 5
+       goals reached against 17 failed, with recovery reporting 0.4 m ahead and
+       2.0 m behind over and over - open space the planner was not allowed to use.
+       The wedges are better answered by footprint_padding above, which keeps the
+       robot out of those spots to begin with. -->
+  <arg name="move_forward_only" default="false"/>
+
+  <include file="$(find turtlebot3_bringup)/launch/turtlebot3_remote.launch">
+    <arg name="model" value="$(arg model)"/>
+  </include>
+
+  <include file="$(find turtlebot3_slam)/launch/turtlebot3_gmapping.launch">
+    <arg name="model" value="$(arg model)"/>
+  </include>
+
+  <!-- Same move_base as fare_navigation.launch, including costmap_override.yaml. The
+       stock inflation_radius of 1.0 wedges the robot in doorways, and mapping drives
+       through more doorways than a patrol does. The override was measured on the AWS
+       map with a burger footprint, so treat it as a working default here rather than
+       a validated one - re-derive with FaRe/diagnose_waypoints.py once this map
+       exists. The static layer follows gmapping's /map as it grows. -->
+  <node pkg="move_base" type="move_base" respawn="false" name="move_base" output="screen">
+    <param name="base_local_planner" value="dwa_local_planner/DWAPlannerROS"/>
+    <rosparam file="$(find turtlebot3_navigation)/param/costmap_common_params_$(arg model).yaml" command="load" ns="global_costmap"/>
+    <rosparam file="$(find turtlebot3_navigation)/param/costmap_common_params_$(arg model).yaml" command="load" ns="local_costmap"/>
+    <rosparam file="$(dirname)/costmap_override.yaml" command="load" ns="global_costmap"/>
+    <rosparam file="$(dirname)/costmap_override.yaml" command="load" ns="local_costmap"/>
+    <rosparam file="$(find turtlebot3_navigation)/param/local_costmap_params.yaml" command="load"/>
+    <rosparam file="$(find turtlebot3_navigation)/param/global_costmap_params.yaml" command="load"/>
+    <rosparam file="$(find turtlebot3_navigation)/param/move_base_params.yaml" command="load"/>
+    <rosparam file="$(find turtlebot3_navigation)/param/dwa_local_planner_params_$(arg model).yaml" command="load"/>
+    <!-- After every rosparam load, so these win over both the stock params and the
+         override file. -->
+    <param name="global_costmap/footprint_padding" value="$(arg footprint_padding)"/>
+    <param name="local_costmap/footprint_padding" value="$(arg footprint_padding)"/>
+    <param name="DWAPlannerROS/min_vel_x" value="0.0" if="$(arg move_forward_only)"/>
+    <remap from="cmd_vel" to="$(arg cmd_vel_topic)"/>
+    <remap from="odom" to="$(arg odom_topic)"/>
+  </node>
+
+  <!-- Off by default for the same reason as fare_navigation.launch: on an integrated
+       GPU, rviz and the Gazebo client together can starve the renderer and take
+       gzserver down mid-run. -->
+  <!-- Note the absence of required="true", which turtlebot3_slam.launch does set on
+       its rviz. Here it would be actively dangerous: rviz is a viewer, but
+       required="true" makes roslaunch tear down the whole launch when that node
+       exits. Closing the rviz window mid-run therefore kills gmapping and takes the
+       map with it, and the only clue is "killing on exit" in the log. -->
+  <group if="$(arg open_rviz)">
+    <node pkg="rviz" type="rviz" name="rviz"
+          args="-d $(find turtlebot3_slam)/rviz/turtlebot3_gmapping.rviz"/>
+  </group>
+</launch>
