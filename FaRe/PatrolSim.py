@@ -94,6 +94,27 @@ def grid_to_world_coords(wp, map_data):
     return world_coords
 
 
+def grid_yaws_to_world(ori):
+    """FaRe's headings are grid-space angles; move_base wants world yaw.
+
+    Same frame mismatch grid_to_world_coords() handles for position. cast_fov()
+    sweeps in pgm coordinates, where the row axis grows *downward*, while world y
+    grows upward. A grid direction (cos t, sin t) over (col, row) therefore points
+    along (cos t, -sin t) in world (x, y), so world yaw = -t.
+
+    Without this the two vertical headings are commanded exactly reversed. With
+    Scout.fov() quantising to [0, 90, 180, 270] degrees those are 90 and 270,
+    which was 15 of the 26 waypoints (58%) on the AWS house map. Position is
+    unaffected, so goals still report SUCCEEDED while the robot faces backwards
+    and the coverage the run actually achieves is silently lower than planned -
+    which is why this outlived the position fix.
+
+    wp_ori_data.txt stays in grid space, matching Surveillance.py and
+    trash_eval.py, which cast FOV in grid coordinates and must not be converted.
+    """
+    return [-theta for theta in ori]
+
+
 def patrol():
     rospy.init_node('patrol_waypoints')
     with open(waypoints_path, 'r') as f:
@@ -106,8 +127,10 @@ def patrol():
                      "Re-run Surveillance.py to regenerate wp_ori_data.txt.")
         return
 
-    # Convert waypoints from grid cells to world coordinates
+    # Convert waypoints from grid cells to world coordinates, and headings from
+    # grid-space angles to world yaw. Both cross the same frame boundary here.
     world_waypoints = grid_to_world_coords(wp, map_data)
+    world_yaws = grid_yaws_to_world(ori)
 
     client = actionlib.SimpleActionClient('move_base', MoveBaseAction)
     rospy.loginfo("waiting for move_base action server")
@@ -116,19 +139,23 @@ def patrol():
 
     with open(patrol_log_path, 'w', newline='') as log_file:
         writer = csv.writer(log_file)
+        # yaw_rad is the world yaw actually commanded; grid_theta_rad is the
+        # planner's grid-space angle it came from, kept so runs stay auditable.
         writer.writerow(['index', 'grid_row', 'grid_col', 'world_x', 'world_y',
-                         'yaw_rad', 'status', 'duration_s'])
+                         'yaw_rad', 'grid_theta_rad', 'status', 'duration_s'])
         try:
             for i, (x, y) in enumerate(world_waypoints):
+                yaw = world_yaws[i]
                 rospy.loginfo(f"Sending goal {i+1}/{len(world_waypoints)}: "
-                              f"({x:.2f}, {y:.2f}, {ori[i]:.2f})")
+                              f"({x:.2f}, {y:.2f}, {yaw:.2f})")
                 start = time.time()
-                status = send_goal(client, x, y, ori[i])
+                status = send_goal(client, x, y, yaw)
                 elapsed = time.time() - start
 
                 rospy.loginfo(f"goal {i+1} -> {status} in {elapsed:.1f}s")
                 writer.writerow([i, wp[i][0], wp[i][1], round(x, 3), round(y, 3),
-                                 round(ori[i], 4), status, round(elapsed, 1)])
+                                 round(yaw, 4), round(ori[i], 4), status,
+                                 round(elapsed, 1)])
                 log_file.flush()
 
                 # A failure usually means the robot is wedged; without this the
