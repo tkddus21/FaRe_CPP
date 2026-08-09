@@ -54,6 +54,54 @@ python3 FaRe/Surveillance.py
 
 점유격자 맵을 처리해 waypoint를 출력 디렉터리에 저장합니다. 이 waypoint들이 시뮬레이션 주행에 쓰입니다.
 
+## 환경 선택
+
+두 가지 환경이 준비돼 있습니다. `FARE_MAP`으로 고르며 기본값은 `aws`이므로, 기존 환경만 쓴다면 이 README의 모든 명령이 그대로 동작합니다.
+
+| `FARE_MAP` | 월드 | 맵 | 결과 저장 위치 |
+| --- | --- | --- | --- |
+| `aws` (기본값) | AWS RoboMaker Small House | `aws-robomaker-small-house-world/maps/turtlebot3_waffle_pi/` | `FaRe/results/` |
+| `house` | 기본 `turtlebot3_house` | [`maps/turtlebot3_house/`](maps/turtlebot3_house/) | `FaRe/results/turtlebot3_house/` |
+
+```bash
+export FARE_MAP=house      # 모든 터미널에서 TURTLEBOT3_MODEL과 함께
+```
+
+환경마다 `output_dir`을 따로 두는 데는 이유가 있습니다. `results/wp_ori_data.txt`는 오프라인 계획기와 순찰 사이의 인계 지점이라, 디렉터리를 공유하면 house 순찰이 AWS waypoint를 주행하고도 아무 경고 없이 무의미한 실행 결과를 남깁니다.
+
+프리셋은 [`FaRe/config.py`](FaRe/config.py) 상단의 `MAPS`에 있으며, 항목을 추가하면 환경이 늘어납니다. 프리셋의 시작점은 `starting_position`(격자 셀) 또는 `start_world`(미터, 로드 시 변환) 중 하나로 지정합니다. 직접 만든 맵에는 `start_world`를 권장합니다. `map_saver`는 원점을 임의로 잡기 때문에, 격자 셀을 하드코딩하면 맵을 다시 만들 때마다 조용히 엉뚱한 지점을 가리키게 됩니다.
+
+### 계획 전에 맵 검사하기
+
+```bash
+FARE_MAP=house python3 FaRe/check_map.py
+```
+
+FaRe는 자유공간을 `unexplored_value`(254)와의 **정확한 일치**로 판별합니다. 따라서 rviz에서 멀쩡히 보이는 맵도 계획기에게는 절반이 보이지 않을 수 있습니다. 이미지 편집기로 내보낸 맵에는 255인 셀과 안티에일리어싱된 회색값이 섞이는데, `map_server`는 이를 자유공간으로 취급하지만 FaRe는 그러지 않습니다. 증상은 커버리지 수치가 집의 절반만 기준으로 조용히 계산되는 것뿐입니다. `check_map.py`는 `{0, 205, 254}`를 벗어난 값이 있으면 실패시키고, 자유 면적과 여유공간을 보고하며, `starting_position`을 스폰할 월드 좌표로 변환해 줍니다.
+
+## turtlebot3_house 맵 만들기
+
+이 집에는 기본 제공 맵이 없으므로 gmapping으로 직접 만듭니다. 두 가지는 피하세요. 이미지 편집기로 맵을 손보는 것(위 참고), 그리고 다른 월드용으로 만든 맵을 가져다 쓰는 것입니다. 몇 cm 어긋난 맵은 그 오차가 `inflation_radius`와 같은 수준이라, navigation 실패처럼 보이는 방식으로 goal을 깎아먹습니다.
+
+```bash
+sudo apt install ros-noetic-slam-gmapping     # 기본 설치돼 있지 않음
+```
+
+터미널 4개, 각각에서 `export TURTLEBOT3_MODEL=waffle_pi`:
+
+```bash
+# T1  월드 + 로봇
+roslaunch ~/catkin_ws/src/FaRe_CPP/launch/house_sim.launch
+# T2  gmapping + rviz
+roslaunch turtlebot3_slam turtlebot3_slam.launch slam_methods:=gmapping
+# T3  벽이 다 이어질 때까지 모든 방 주행
+roslaunch turtlebot3_teleop turtlebot3_teleop_key.launch
+# T4  저장
+rosrun map_server map_saver -f ~/catkin_ws/src/FaRe_CPP/maps/turtlebot3_house/map
+```
+
+넓은 방은 벽을 따라 도는 것뿐 아니라 한가운데도 한 번 지나가세요. waffle_pi의 LDS는 3.5 m에서 끊기고, 채워지지 않은 실내는 장벽으로 취급됩니다 — `diagnose_waypoints.py`가 미탐색 영역을 장벽으로 보며, 그런 곳에는 waypoint가 배치되지 않습니다. 이후 `check_map.py`로 검사하고, `Surveillance.py`로 이 맵의 waypoint를 생성합니다.
+
 ## 온라인 주행(순찰)
 
 시뮬레이션에서 순찰을 실행하려면 ROS와 Gazebo가 설치돼 있어야 합니다.
@@ -84,7 +132,7 @@ FaRe가 제공하는 것은 **어디에 서서 어느 쪽을 볼지**뿐입니�
 
 ## 온라인 주행 실행 절차
 
-터미널 4개를 사용합니다. 각 터미널에서 `source ~/catkin_ws/devel/setup.bash`와 `export TURTLEBOT3_MODEL=waffle_pi`를 먼저 실행하세요. (`burger`도 가능하지만, `waffle_pi`가 동봉된 맵을 만들 때의 스캔 높이와 일치하며 실측에서도 더 좋았습니다 — 24/26 대 20/26.)
+터미널 4개를 사용합니다. 각 터미널에서 `source ~/catkin_ws/devel/setup.bash`와 `export TURTLEBOT3_MODEL=waffle_pi`를 먼저 실행하세요. (`burger`도 가능하지만, `waffle_pi`가 동봉된 맵을 만들 때의 스캔 높이와 일치하며 실측에서도 더 좋았습니다 — 24/26 대 20/26.) turtlebot3_house를 쓴다면 `export FARE_MAP=house`도 함께 실행합니다.
 
 **터미널 1 — 월드 실행**
 ```bash
@@ -101,12 +149,24 @@ roslaunch aws_robomaker_small_house_world spawn_turtlebot3.launch x_pos:=4.65 y_
 ```
 `x_pos`/`y_pos`는 첫 waypoint(`FaRe/config.py`의 `starting_position`)의 월드 좌표입니다. 계획된 지점에서 순찰이 시작되도록 맞춘 값입니다. 격자 셀 `(row, col)`은 다음으로 변환합니다:
 `x = col * resolution + origin[0]`, `y = (map_height - 1 - row) * resolution + origin[1]`
+`check_map.py`가 이 스폰 명령을 그대로 출력해 주므로 그대로 복사해 써도 됩니다.
 
 > 여기서 `roslaunch turtlebot3_gazebo turtlebot3_world.launch`를 쓰면 **안 됩니다.** 그 launch 파일은 자체 gzserver를 turtlebot3 전용 월드로 띄우므로, 집 안에 스폰되는 게 아니라 **다른 월드가 하나 더 열리고** 터미널 1과 `gazebo` 노드 이름이 충돌합니다.
+
+**turtlebot3_house의 터미널 1·2** — launch 파일 하나가 둘 다 처리합니다:
+```bash
+roslaunch ~/catkin_ws/src/FaRe_CPP/launch/house_sim.launch
+```
+기본 스폰 위치는 이 집의 기본 지점인 `(-3.0, 1.0)`이며, `house` 프리셋이 waypoint 0으로 변환하는 좌표와 같습니다. `start_world`를 바꿨다면 `x_pos:=`/`y_pos:=`로 맞추세요.
+
+> 여기에 `roslaunch turtlebot3_gazebo turtlebot3_house.launch`를 쓰면 **안 됩니다.** 같은 월드를 띄우긴 하지만 Gazebo 모델 이름을 그냥 `turtlebot3`로 스폰합니다. 반면 `set_initial_pose.py`와 `run_patrol_test.sh`의 AMCL 사전 검사는 둘 다 `turtlebot3_$TURTLEBOT3_MODEL`을 조회합니다. 사전 검사에는 이 이름을 바꿀 수단이 없어서, 찾지 못한 모델의 0 자세와 AMCL을 비교하고 모든 실행을 중단시킵니다.
 
 **터미널 3 — navigation stack (map_server + AMCL + move_base)**
 ```bash
 roslaunch ~/catkin_ws/src/FaRe_CPP/launch/fare_navigation.launch
+# turtlebot3_house:
+roslaunch ~/catkin_ws/src/FaRe_CPP/launch/fare_navigation.launch \
+  map_file:=$HOME/catkin_ws/src/FaRe_CPP/maps/turtlebot3_house/map.yaml
 ```
 `PatrolSim.py`는 `move_base` 액션 서버로 목표를 보내는데, 이게 떠 있어야만 동작합니다.
 
@@ -125,17 +185,20 @@ python3 FaRe/set_initial_pose.py
 
 ## 실행 기록하기
 
-`./FaRe/run_patrol_test.sh [라벨]`은 순찰 한 번을 `results/<날짜>_<시각>_<라벨>/`에 담습니다. 덮어쓰지 않고 실행이 쌓입니다. 라벨을 생략하면 `$TURTLEBOT3_MODEL`이 쓰입니다. 실행 간에 보통 이 값이 달라지기 때문입니다.
+`./FaRe/run_patrol_test.sh [라벨]`은 순찰 한 번을 `<output_dir>/<날짜>_<시각>_<라벨>/`에 담습니다. 덮어쓰지 않고 실행이 쌓입니다. 라벨을 생략하면 `${FARE_MAP}_${TURTLEBOT3_MODEL}`이 쓰입니다. 실행 간에 보통 이 둘이 달라지며, 환경이 둘 이상이면 `waffle_pi`라는 이름만으로는 어떤 실행인지 알 수 없기 때문입니다.
 
 ```bash
-./FaRe/run_patrol_test.sh              # -> results/20260729_2350_waffle_pi
-./FaRe/run_patrol_test.sh infl03       # -> results/20260729_2350_infl03
+./FaRe/run_patrol_test.sh                  # -> results/20260729_2350_aws_waffle_pi
+FARE_MAP=house ./FaRe/run_patrol_test.sh   # -> results/turtlebot3_house/20260729_2350_house_waffle_pi
+./FaRe/run_patrol_test.sh infl03           # -> results/20260729_2350_infl03
 RECORD_SCAN=1 ./FaRe/run_patrol_test.sh    # /scan도 기록 (bag이 훨씬 커짐)
 ```
 
+이 스크립트는 `results/`를 가정하지 않고 `FaRe/config.py`의 `output_dir`을 읽으므로, `FARE_MAP`이 고른 환경을 그대로 따라갑니다.
+
 폴더명을 `test1`, `test2` 대신 이렇게 정한 이유는, 시간순 정렬과 충돌 방지는 타임스탬프가, "무엇을 바꿨는지"는 라벨이 담당하기 때문입니다. 번호만으로는 나중에 어떤 조건이었는지 알 수 없습니다.
 
-각 폴더에는 bag, `patrol_log.csv`, **실제로 주행한** `wp_ori_data.txt`, 커버리지·지표 산출물, 그리고 모델·적용된 costmap 파라미터·git 리비전을 담은 `run_info.txt`가 남습니다. 몇 달 뒤에도 수치를 해석할 수 있도록 하기 위함입니다.
+각 폴더에는 bag, `patrol_log.csv`, **실제로 주행한** `wp_ori_data.txt`, 커버리지·지표 산출물, 그리고 모델·사용한 맵·적용된 costmap 파라미터·git 리비전을 담은 `run_info.txt`가 남습니다. 몇 달 뒤에도 수치를 해석할 수 있도록 하기 위함입니다.
 
 기록을 시작하기 전에 스크립트가 확인하는 것: `move_base`가 떠 있는지, waypoint가 있는지, 그리고 **AMCL 추정이 Gazebo 실측과 0.5 m 이내로 일치하는지**입니다. 마지막 검사가 중요합니다. 파티클 필터가 발산하면 로그상으로는 주행 실패처럼 보이지만 실제로는 **측정 실패**이고, 로그만 봐서는 구분되지 않습니다. 또한 `rosbag`을 SIGKILL이 아닌 **SIGINT**로 종료합니다. 강제 종료된 bag은 색인이 없어 재생이 불가능할 수 있습니다.
 
@@ -153,10 +216,12 @@ rosbag play --clock -d 5 -r 3 results/<실행폴더>/patrol.bag
 ## 커버리지·탐지 성능 확인
 
 ```bash
+python3 FaRe/check_map.py             # 맵 자체: 3값 여부, 자유 면적, 시작 셀
 python3 FaRe/diagnose_waypoints.py    # waypoint별 여유공간 vs 로봇 풋프린트
 python3 FaRe/trash_eval.py            # 계획 경로가 배치된 물체를 몇 개나 보는지
 python3 FaRe/trash_eval.py --range 5  # 낙관적인 최대 사거리 기준과 비교
 ```
+`trash_eval.py`는 AWS 전용입니다. `FaRe/trash_positions.txt`에 들어 있는 격자 좌표는 그 맵 기준이라 다른 맵에서는 엉뚱한 지점을 가리킵니다.
 `Surveillance.py`는 `results/coverage_map.png`(주황 = 센서가 본 영역, 빨강 = 놓친 자유공간)도 만들고 커버리지 비율을 `results/metrics.csv`에 덧붙입니다. `trash_eval.py`가 쓰는 물체 위치는 `FaRe/trash_positions.txt`에 `row, col` 격자 좌표로 들어 있습니다.
 
 ## 알려진 한계

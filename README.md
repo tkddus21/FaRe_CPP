@@ -57,6 +57,54 @@ After cloning, update the file paths in `FaRe/config.py` to point to where your 
 
 This will process the environment Occupancy grid map and save the waypoints in the output directory. These waypoints will be used for navigation in the simulation.
 
+## Choosing the environment
+
+Two environments are set up. `FARE_MAP` selects one, and defaults to `aws` — so every command in this README works unchanged if you only care about the original.
+
+| `FARE_MAP` | World | Map | Results land in |
+| --- | --- | --- | --- |
+| `aws` (default) | AWS RoboMaker Small House | `aws-robomaker-small-house-world/maps/turtlebot3_waffle_pi/` | `FaRe/results/` |
+| `house` | stock `turtlebot3_house` | [`maps/turtlebot3_house/`](maps/turtlebot3_house/) | `FaRe/results/turtlebot3_house/` |
+
+```bash
+export FARE_MAP=house      # in every terminal, alongside TURTLEBOT3_MODEL
+```
+
+Each environment keeps its own `output_dir` on purpose: `results/wp_ori_data.txt` is the handoff between the offline planner and the patrol, so a shared directory would let a house patrol drive the AWS waypoints and quietly produce a meaningless run.
+
+Presets live in `MAPS` at the top of [`FaRe/config.py`](FaRe/config.py); add an environment by adding an entry. A preset gives its start point either as `starting_position` (grid cells) or `start_world` (metres, converted on load). Prefer `start_world` for maps you build yourself — `map_saver` picks an arbitrary origin, so a hardcoded grid cell silently points somewhere else every time the map is rebuilt.
+
+### Check a map before planning on it
+
+```bash
+FARE_MAP=house python3 FaRe/check_map.py
+```
+
+FaRe identifies free space by **exact equality** with `unexplored_value` (254), so a map that renders perfectly in rviz can still be half-invisible to the planner. A map exported from an image editor carries cells at 255 plus a spread of anti-aliased greys; `map_server` treats those as free and FaRe does not, and the only symptom is a coverage number quietly computed over half the house. `check_map.py` fails on anything outside `{0, 205, 254}`, reports free area and clearance, and converts `starting_position` into the world coordinates to spawn at.
+
+## Mapping the turtlebot3_house
+
+The house ships no map, so build one with gmapping. Two things not to do: do not hand-edit a map in an image editor (see above), and do not borrow one built for a different world — a map registered a few centimetres off is the same order as `inflation_radius`, and it costs goals in a way that looks like a navigation failure.
+
+```bash
+sudo apt install ros-noetic-slam-gmapping     # not installed by default
+```
+
+Four terminals, each with `export TURTLEBOT3_MODEL=waffle_pi`:
+
+```bash
+# T1  world + robot
+roslaunch ~/catkin_ws/src/FaRe_CPP/launch/house_sim.launch
+# T2  gmapping + rviz
+roslaunch turtlebot3_slam turtlebot3_slam.launch slam_methods:=gmapping
+# T3  drive every room until the walls close up
+roslaunch turtlebot3_teleop turtlebot3_teleop_key.launch
+# T4  save
+rosrun map_server map_saver -f ~/catkin_ws/src/FaRe_CPP/maps/turtlebot3_house/map
+```
+
+Drive down the middle of wide rooms as well as around the walls: the waffle_pi's LDS stops at 3.5 m, and unmapped interior counts as a barrier — `diagnose_waypoints.py` treats unknown space as one, and waypoints are never placed there. Then run `check_map.py`, and `Surveillance.py` to generate the waypoints for this map.
+
 ## Online Navigation(Patrolling)
 To execute patrols in the simulation, please make sure ROS and Gazebo are installed and follow these steps.
 
@@ -84,7 +132,7 @@ FaRe supplies **where to stand and which way to face** — nothing else. The rou
 
 ## Steps for Online Navigation
 
-Use four terminals. In each one run `source ~/catkin_ws/devel/setup.bash` and `export TURTLEBOT3_MODEL=waffle_pi` (or `burger`; `waffle_pi` matches the scan height the bundled map was built at and measured better — 24/26 goals vs 20/26).
+Use four terminals. In each one run `source ~/catkin_ws/devel/setup.bash` and `export TURTLEBOT3_MODEL=waffle_pi` (or `burger`; `waffle_pi` matches the scan height the bundled map was built at and measured better — 24/26 goals vs 20/26). For the turtlebot3_house, also `export FARE_MAP=house`.
 
 **Terminal 1 — launch the world**
 ```bash
@@ -100,13 +148,24 @@ roslaunch dynamic_logistics_warehouse logistics_warehouse.launch
 roslaunch aws_robomaker_small_house_world spawn_turtlebot3.launch x_pos:=4.65 y_pos:=-2.0
 ```
 `x_pos`/`y_pos` are the world coordinates of the first waypoint (`starting_position` in `FaRe/config.py`), so the patrol starts where it was planned. Convert any grid cell `(row, col)` with
-`x = col * resolution + origin[0]` and `y = (map_height - 1 - row) * resolution + origin[1]`.
+`x = col * resolution + origin[0]` and `y = (map_height - 1 - row) * resolution + origin[1]` — or just read the spawn command off `check_map.py`, which prints it.
 
 > Do **not** use `roslaunch turtlebot3_gazebo turtlebot3_world.launch` here. That launch file starts its own gzserver with turtlebot3's own world file, so it does not spawn into the house — it opens a second, different world and clashes with Terminal 1 over the `gazebo` node name.
+
+**Terminals 1 and 2, for the turtlebot3_house** — one launch file does both:
+```bash
+roslaunch ~/catkin_ws/src/FaRe_CPP/launch/house_sim.launch
+```
+It defaults to the house's stock spawn point `(-3.0, 1.0)`, which is what the `house` preset resolves waypoint 0 to; override with `x_pos:=`/`y_pos:=` if you change `start_world`.
+
+> Do **not** use `roslaunch turtlebot3_gazebo turtlebot3_house.launch` for this. It loads the same world, but spawns the Gazebo model under the bare name `turtlebot3`, while `set_initial_pose.py` and `run_patrol_test.sh`'s AMCL pre-check both look up `turtlebot3_$TURTLEBOT3_MODEL`. The pre-check has no override for that name, so it compares AMCL against a not-found model's zero pose and aborts every run.
 
 **Terminal 3 — navigation stack (map_server + AMCL + move_base)**
 ```bash
 roslaunch ~/catkin_ws/src/FaRe_CPP/launch/fare_navigation.launch
+# turtlebot3_house:
+roslaunch ~/catkin_ws/src/FaRe_CPP/launch/fare_navigation.launch \
+  map_file:=$HOME/catkin_ws/src/FaRe_CPP/maps/turtlebot3_house/map.yaml
 ```
 `PatrolSim.py` sends goals to a `move_base` action server, which only exists once this is running.
 
@@ -125,15 +184,18 @@ python3 FaRe/set_initial_pose.py
 
 ## Recording a run
 
-`./FaRe/run_patrol_test.sh [label]` captures one patrol into `results/<date>_<time>_<label>/` so runs accumulate instead of overwriting each other. The label defaults to `$TURTLEBOT3_MODEL`, since that is usually what differs between runs.
+`./FaRe/run_patrol_test.sh [label]` captures one patrol into `<output_dir>/<date>_<time>_<label>/` so runs accumulate instead of overwriting each other. The label defaults to `${FARE_MAP}_${TURTLEBOT3_MODEL}`, the two things that usually differ between runs — with more than one environment in play, a directory named just `waffle_pi` no longer identifies the run.
 
 ```bash
-./FaRe/run_patrol_test.sh              # -> results/20260729_2350_waffle_pi
-./FaRe/run_patrol_test.sh infl03       # -> results/20260729_2350_infl03
+./FaRe/run_patrol_test.sh                  # -> results/20260729_2350_aws_waffle_pi
+FARE_MAP=house ./FaRe/run_patrol_test.sh   # -> results/turtlebot3_house/20260729_2350_house_waffle_pi
+./FaRe/run_patrol_test.sh infl03           # -> results/20260729_2350_infl03
 RECORD_SCAN=1 ./FaRe/run_patrol_test.sh    # also record /scan (much larger bag)
 ```
 
-Each folder ends up with the bag, `patrol_log.csv`, the `wp_ori_data.txt` that was actually driven, the coverage/metrics artefacts, and a `run_info.txt` recording the model, the costmap parameters in effect and the git revision — so the numbers stay interpretable months later.
+The script reads `output_dir` from `FaRe/config.py` rather than assuming `results/`, so it follows whichever environment `FARE_MAP` selects.
+
+Each folder ends up with the bag, `patrol_log.csv`, the `wp_ori_data.txt` that was actually driven, the coverage/metrics artefacts, and a `run_info.txt` recording the model, the map, the costmap parameters in effect and the git revision — so the numbers stay interpretable months later.
 
 Before recording anything the script checks that `move_base` is up, that waypoints exist, and **that AMCL agrees with Gazebo ground truth to within 0.5 m**. That last check matters: a diverged particle filter produces a run that looks like a navigation failure but is really a measurement failure, and it is not obvious from the logs. It also stops `rosbag` with SIGINT rather than SIGKILL, because a killed bag is left unindexed and may be unplayable.
 
@@ -149,10 +211,12 @@ rosbag play --clock -d 5 -r 3 results/<run>/patrol.bag
 ## Verifying coverage and detection
 
 ```bash
+python3 FaRe/check_map.py             # the map itself: trinary values, free area, start cell
 python3 FaRe/diagnose_waypoints.py    # clearance per waypoint vs the robot footprint
 python3 FaRe/trash_eval.py            # how many placed objects the planned path would see
 python3 FaRe/trash_eval.py --range 5  # compare against the optimistic full sensor range
 ```
+`trash_eval.py` is AWS-only: `FaRe/trash_positions.txt` holds grid cells for that map, which index meaningless spots on any other.
 `Surveillance.py` also writes `results/coverage_map.png` (orange = seen by the sensor, red = free space missed) and appends the coverage percentage to `results/metrics.csv`. Object positions for `trash_eval.py` live in `FaRe/trash_positions.txt` as `row, col` grid cells.
 
 ## Known Limitations

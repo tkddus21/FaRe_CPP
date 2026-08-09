@@ -1,0 +1,42 @@
+<launch>
+  <!-- turtlebot3_house world plus a TurtleBot3, for FaRe patrols and for the gmapping
+       run that builds the map in the first place.
+
+       Use this instead of turtlebot3_gazebo/turtlebot3_house.launch. That one is
+       otherwise equivalent, but spawns the Gazebo model under the bare name
+       "turtlebot3", while set_initial_pose.py and run_patrol_test.sh's AMCL
+       pre-check both look up "turtlebot3_$TURTLEBOT3_MODEL". The pre-check has no
+       override for that name, so against the stock launch it compares AMCL to a
+       not-found model's zero pose and aborts every run.
+
+       Launch by path (FaRe_CPP is not a catkin package):
+         roslaunch ~/catkin_ws/src/FaRe_CPP/launch/house_sim.launch -->
+
+  <arg name="model" default="$(env TURTLEBOT3_MODEL)" doc="model type [burger, waffle, waffle_pi]"/>
+  <arg name="gui" default="true"/>
+
+  <!-- Defaults match the house's stock spawn point: open floor, and the same pose
+       the "house" preset in FaRe/config.py resolves its first waypoint to, so the
+       patrol starts where it was planned. -->
+  <arg name="x_pos" default="-3.0"/>
+  <arg name="y_pos" default="1.0"/>
+  <arg name="z_pos" default="0.0"/>
+
+  <include file="$(find gazebo_ros)/launch/empty_world.launch">
+    <arg name="world_name" value="$(find turtlebot3_gazebo)/worlds/turtlebot3_house.world"/>
+    <arg name="paused" value="false"/>
+    <arg name="use_sim_time" value="true"/>
+    <arg name="gui" value="$(arg gui)"/>
+    <arg name="headless" value="false"/>
+    <arg name="debug" value="false"/>
+  </include>
+
+  <param name="robot_description" command="$(find xacro)/xacro --inorder $(find turtlebot3_description)/urdf/turtlebot3_$(arg model).urdf.xacro" />
+
+  <node pkg="gazebo_ros" type="spawn_model" name="spawn_urdf" args="-urdf -model turtlebot3_$(arg model) -x $(arg x_pos) -y $(arg y_pos) -z $(arg z_pos) -param robot_description" />
+
+  <!-- robot_state_publisher is intentionally NOT started here. Whatever runs next
+       brings its own via turtlebot3_remote.launch - fare_navigation.launch for a
+       patrol, turtlebot3_slam.launch for mapping - and two nodes named
+       /robot_state_publisher kill each other. -->
+</launch>

@@ -9,13 +9,13 @@
 # Runs are named <date>_<time>_<label> so they sort chronologically, never
 # collide, and say what was being tested:
 #
-#   ./run_patrol_test.sh                # -> results/20260729_0130_waffle_pi
-#   ./run_patrol_test.sh infl03         # -> results/20260729_0130_infl03
-#   RECORD_SCAN=1 ./run_patrol_test.sh  # also record /scan (much larger bag)
+#   ./run_patrol_test.sh                     # -> results/20260729_0130_aws_waffle_pi
+#   FARE_MAP=house ./run_patrol_test.sh      # -> results/turtlebot3_house/20260729_0130_house_waffle_pi
+#   ./run_patrol_test.sh infl03              # -> results/20260729_0130_infl03
+#   RECORD_SCAN=1 ./run_patrol_test.sh       # also record /scan (much larger bag)
 set -uo pipefail
 
 FARE_DIR="$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)"
-RESULTS_DIR="$FARE_DIR/results"
 
 # Topics worth keeping. costmap and costmap_updates go together: costmap_2d
 # publishes the full grid once and then only sends deltas, so without the
@@ -45,10 +45,26 @@ die() { echo "ERROR: $*" >&2; exit 1; }
 # created, so a failed attempt does not burn a test number.
 # Each of these has cost us a wasted run at some point, so check up front
 # rather than discovering the problem 12 minutes in.
+
+# The map is chosen by FARE_MAP (see FaRe/config.py), and each map keeps its own
+# output_dir. Read it from the config rather than assuming results/, so a house
+# run cannot drive the AWS run's waypoints or overwrite its artefacts.
+CFG="$(python3 -c "
+import sys
+sys.path.insert(0, '$FARE_DIR')
+from config import config, MAP_NAME
+print(config['output_dir'])
+print(MAP_NAME)
+print(config['yaml_filename'])
+")" || die "could not read FaRe/config.py (bad FARE_MAP?)"
+{ read -r RESULTS_DIR; read -r FARE_MAP_NAME; read -r MAP_YAML; } <<< "$CFG"
+
 rosnode list 2>/dev/null | grep -q '/move_base' \
   || die "move_base is not running - start the navigation stack first"
 [ -f "$RESULTS_DIR/wp_ori_data.txt" ] \
   || die "no waypoints at $RESULTS_DIR/wp_ori_data.txt - run Surveillance.py first"
+
+echo "==> FARE_MAP=$FARE_MAP_NAME  ($MAP_YAML)"
 
 MODEL="${TURTLEBOT3_MODEL:-unset}"
 echo "==> TURTLEBOT3_MODEL=$MODEL"
@@ -81,11 +97,12 @@ sys.exit(0 if err < 0.5 else 1)
 PY
 
 # --- pick the run directory ------------------------------------------------
-# <date>_<time>_<label>, e.g. 20260729_0130_waffle_pi. The timestamp sorts runs
-# chronologically and can never collide; the label says what was being tested,
-# which a bare test1/test2 does not. Defaults to the robot model, since that is
-# usually what differs between runs.
-LABEL="${1:-$MODEL}"
+# <date>_<time>_<label>, e.g. 20260729_0130_aws_waffle_pi. The timestamp sorts
+# runs chronologically and can never collide; the label says what was being
+# tested, which a bare test1/test2 does not. Defaults to map + robot model, the
+# two things that usually differ between runs - with more than one map in play,
+# a directory named just "waffle_pi" no longer identifies the run.
+LABEL="${1:-${FARE_MAP_NAME}_${MODEL}}"
 LABEL="${LABEL//[^A-Za-z0-9._-]/_}"
 RUN_DIR="$RESULTS_DIR/$(date '+%Y%m%d_%H%M')_$LABEL"
 [ -e "$RUN_DIR" ] && die "$RUN_DIR already exists; wait a minute or pass another label"
@@ -129,6 +146,8 @@ done
 {
   echo "date              : $(date '+%F %T')"
   echo "TURTLEBOT3_MODEL  : $MODEL"
+  echo "FARE_MAP          : $FARE_MAP_NAME"
+  echo "map               : $MAP_YAML"
   echo "recorded topics   : ${#TOPICS[@]}"
   for p in footprint footprint_padding; do
     echo "$p : $(rosparam get "/move_base/global_costmap/$p" 2>/dev/null)"
