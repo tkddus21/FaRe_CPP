@@ -28,8 +28,20 @@ FrontierResult Scout::computeFOV(const Grid& grid_map, const Point& start_pos,
             angles.push_back(angle);
         }
         
-        int x_start = start_pos.first;
-        int y_start = start_pos.second;
+        // Every FaRe grid point is (row, col): findFrontierCells() builds them
+        // as {i, j} with i over rows, and the Python reference unpacks them as
+        // "y_start, x_start = start_pos". Reading .first as x transposes the
+        // ray-cast origin across the diagonal, so each frontier is scored by
+        // the FOV of a different cell -- silently, with no error, on every map.
+        //
+        // On non-square maps it also truncates. The bounds check below tests
+        // y against rows, so with y_start = col every candidate at col >= rows
+        // casts nothing at all and scores zero area. Measured on the 301x213
+        // turtlebot3_house map used by the ROS 2 port: 13623 of 37930 free
+        // cells (35.9%) fall in that dead band. Square maps such as aws
+        // (500x500) hide the truncation but are still transposed.
+        int y_start = start_pos.first;
+        int x_start = start_pos.second;
         
         // Ray casting for FOV computation
         for (double angle : angles) {
