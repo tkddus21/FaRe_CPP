@@ -10,8 +10,11 @@ FaRe/results/
 # starts from what gmapping recorded rather than from its own output. Regenerable.
 *.orig
 
-# C++ build output (FaRe_CPP/output/ is deliberately tracked — sample run kept in-repo)
+# C++ build output (FaRe_CPP/output/ is deliberately tracked — sample run kept in-repo).
+# bin/ is where CMakeLists.txt pins RUNTIME_OUTPUT_DIRECTORY, so it lands in the
+# source tree rather than beside the cache in build/.
 FaRe_CPP/build/
+FaRe_CPP/bin/
 
 # macOS
 .DS_Store
