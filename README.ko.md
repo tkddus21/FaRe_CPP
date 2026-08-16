@@ -87,20 +87,32 @@ FaRe는 자유공간을 `unexplored_value`(254)와의 **정확한 일치**로 �
 sudo apt install ros-noetic-slam-gmapping     # 기본 설치돼 있지 않음
 ```
 
-터미널 4개, 각각에서 `export TURTLEBOT3_MODEL=waffle_pi`:
+터미널 3개, 각각에서 `export TURTLEBOT3_MODEL=waffle_pi`:
 
 ```bash
 # T1  월드 + 로봇
 roslaunch ~/catkin_ws/src/FaRe_CPP/launch/house_sim.launch
-# T2  gmapping + rviz
-roslaunch turtlebot3_slam turtlebot3_slam.launch slam_methods:=gmapping
-# T3  벽이 다 이어질 때까지 모든 방 주행
-roslaunch turtlebot3_teleop turtlebot3_teleop_key.launch
-# T4  저장
+
+# T2  gmapping + move_base
+roslaunch ~/catkin_ws/src/FaRe_CPP/launch/house_mapping.launch open_rviz:=true
+
+# T3  방을 찾고 → 빈틈을 메우고 → 저장
+python3 ~/catkin_ws/src/FaRe_CPP/FaRe/explore_for_mapping.py
+python3 ~/catkin_ws/src/FaRe_CPP/FaRe/tour_house_for_mapping.py
 rosrun map_server map_saver -f ~/catkin_ws/src/FaRe_CPP/maps/turtlebot3_house/map
+
+# T3  정원을 미탐색으로 되돌림
+python3 ~/catkin_ws/src/FaRe_CPP/FaRe/crop_map_to_house.py \
+    ~/catkin_ws/src/FaRe_CPP/maps/turtlebot3_house/map.pgm
 ```
 
-넓은 방은 벽을 따라 도는 것뿐 아니라 한가운데도 한 번 지나가세요. waffle_pi의 LDS는 3.5 m에서 끊기고, 채워지지 않은 실내는 장벽으로 취급됩니다 — `diagnose_waypoints.py`가 미탐색 영역을 장벽으로 보며, 그런 곳에는 waypoint가 배치되지 않습니다. 이후 `check_map.py`로 검사하고, `Surveillance.py`로 이 맵의 waypoint를 생성합니다.
+이후 `check_map.py`로 검사하고, `Surveillance.py`로 이 맵의 waypoint를 생성합니다.
+
+**`house_mapping.launch`가 매핑 스택 전부입니다** — robot_state_publisher, gmapping, move_base가 모두 들어 있습니다. `turtlebot3_slam.launch`를 같이 띄우지 마세요. 둘 다 같은 이름으로 노드를 올리고, roslaunch는 그 충돌을 먼저 뜬 쪽을 죽여서 해결합니다. 살아남은 쪽에는 scan 변환이 없고 `/map`은 다시는 발행되지 않습니다. 겉으로는 move_base가 안 올라오는 것처럼 보이지만, 그때까지 만든 맵은 이미 사라진 뒤입니다.
+
+**주행 스크립트 두 개를 이 순서로.** `explore_for_mapping.py`는 gmapping이 실시간으로 내보내는 `/map`에서 프론티어(미탐색에 닿아 있는 자유 셀)를 골라 갑니다. 방을 *찾는* 데는 강하지만 *끝내는* 데는 약합니다 — 프론티어가 없어지는 즉시 멈추는데, 4 m 밖에서 한 번 스친 벽도 얼룩인 채로 그 조건을 만족하기 때문입니다. `tour_house_for_mapping.py`는 반대로 접근합니다. 이 집은 이미 알려진 정적 월드이므로, `turtlebot3_gazebo`의 `model.sdf`에서 방 경계를 읽어 그 위에 1.2 m 격자를 깔고 전부 방문합니다. gmapping의 `maxUrange` 3.0 m보다 촘촘하게 잡은 값이라, 모든 방의 모든 지점을 스캔이 닿는 거리에서 봅니다. 넓은 방 한가운데를 손으로 지나가라던 기존 안내를 대신하는 부분입니다 — 채워지지 않은 실내는 장벽으로 취급되고, `diagnose_waypoints.py`는 그런 곳에 waypoint를 놓지 않습니다. 탐색 후에 투어를 이어 돌려도 안전합니다. 같은 gmapping 노드가 계속 누적합니다.
+
+**크롭이 필요한 이유.** 집의 동쪽 벽은 y = -0.40 ~ 0.50 구간이 트여 있고 남쪽 벽에도 x = 5.0 ~ 5.8 부근에 틈이 있어, 레이저가 그대로 잔디밭으로 빠져나갑니다. gmapping은 정원을 자유공간으로 기록하고 이를 막을 경계가 없습니다. 그대로 두면 FaRe가 잔디에 waypoint를 놓고 잔디까지 포함한 커버리지를 보고합니다. `crop_map_to_house.py`는 `model.sdf`의 방 영역으로 맵을 한정합니다 — 동봉된 맵 기준 100.7 → 93.4 ㎡로 측정됐습니다. 위에서 경고한 이미지 편집기 손질과는 다릅니다. 리샘플링이 없고, 쓰는 값은 맵이 이미 미탐색에 쓰고 있는 205 하나뿐이며, origin을 건드리지 않으므로 맵은 여전히 Gazebo 월드 좌표와 정렬됩니다. 크롭 전 원본을 `.orig`로 남기고 매 실행마다 그쪽에서 다시 읽으므로, 여백을 넓혀 다시 돌리는 것도 그대로 됩니다.
 
 ## 온라인 주행(순찰)
 
@@ -234,7 +246,35 @@ python3 FaRe/trash_eval.py --range 5  # 낙관적인 최대 사거리 기준과 
 
 - **센서 모델은 평면 2D 부채꼴 (의도된 설계이나 알아둘 것):** FOV는 점유격자 위에서 광선을 쏘는 90° 부채꼴이며, 0.05~5 m 범위에 가려짐은 반영되지만(광선이 장애물에서 멈춤) 수직 방향 개념·센서 높이·장착 형상은 없습니다. 격자 평면 자체가 스캔 평면이고, 그 높이는 맵을 만든 높이입니다. 방향은 `[0, 90, 180, 270]`도 네 개 후보 중 보이는 면적이 가장 큰 것으로 정해집니다. `surveillance_range`는 5 m인데 waffle_pi의 LDS는 3.5 m까지라, 계획 커버리지는 두 맵 모두에서 낙관적입니다. 미탐색 셀은 광선을 막지도, 본 것으로 세지도 않습니다. (`FaRe_CPP/src/FOV.cpp`가 카메라 모델로 수직 FOV를 계산하지만 호출하는 곳이 없습니다 — C++ 계획기도 같은 평면 부채꼴을 씁니다.)
 
-- **waypoint 여유공간이 로봇 풋프린트를 반영하지 않음 (미해결이나 측정됨):** `FaRe/Scout_Multi_Processing.py`의 `find_frontier_cells()`는 후보 셀이 *가장 가까운* 장애물 셀에서 `buffer_distance`(기본 4셀, 해상도 0.05에서 0.2 m)만큼 떨어져 있는지만 봅니다. 이는 단일 지점 거리 검사일 뿐, 로봇이 실제로 지나야 하는 통로가 충분히 넓은지는 검사하지 않습니다. waypoint별 실제 여유공간은 `FaRe/diagnose_waypoints.py`로 측정할 수 있습니다(거리변환 기반이며 미탐색 영역도 장벽으로 취급).
+- **waypoint 여유공간이 로봇 풋프린트를 반영하지 않던 문제 (수정됨):** 예전 `find_frontier_cells()`는 후보 셀의 ±4셀 정사각 이웃에 벽이 없으면 통과시켰습니다. 문제가 둘이었습니다. 정사각형은 *체비쇼프* 거리를 재므로 로봇 크기와 무관하게 5셀 = 0.25 m만 보장했고, 벽(`0`)만 검사해서 미탐색 공간(`205`)은 — `crop_map_to_house.py`가 그리는 경계까지 포함해 — 아예 보이지 않았습니다. house 맵에서 26개 중 14개가 벽에서 정확히 0.25 m에, 하나는 크롭 경계에서 0.05 m에 놓였습니다.
+
+  이제 생성은 **inflated 맵** 위에서 이뤄집니다. move_base의 costmap inflation에 대응하는 계획기 쪽 장치로, `Exploration.placeable_mask()`가 모든 장벽(벽과 미탐색 셀 모두)을 거리변환 한 번으로 `config['waypoint_clearance']`만큼 부풀리고, 살아남은 영역에만 waypoint를 놓습니다. `diagnose_waypoints.py`도 같은 상수로 판정하므로, 갓 생성한 집합은 정의상 `TIGHT`도 `UNREACHABLE`도 0입니다. 즉 이 스크립트는 걸러내는 필터가 아니라 "이 waypoint 파일이 이 맵에서 나온 게 맞는지" 확인하는 검사가 됩니다.
+
+  마스크는 **위치만** 제약합니다. 프론티어 판정과 `cast_fov()`는 여전히 실제 격자에서 돌기 때문에 inflation이 커버리지를 깎지 않습니다. 로봇이 설 수 없는 셀이라도 볼 수는 있으니까요.
+
+  `config['waypoint_clearance']`는 실측으로 0.35 m입니다. 아래 경계: 벽에서 0.30 m인 goal은 `ABORTED`, 0.32 m는 `SUCCEEDED`였으므로 `robot_radius * 2` = 0.31이 딱 그 칼날 위입니다. 위 경계: 0.45 m에서는 house 맵의 배치 가능 영역이 두 조각으로 갈라집니다. 0.35는 house 자유공간의 64%를 하나의 연결 요소로 남기고(AWS 69%), 모든 자유 셀이 여전히 `surveillance_range` 안에서 배치 가능 지점을 갖습니다.
+
+  turtlebot3_house + waffle_pi 실주행 측정: **수정 전 12/26, 수정 후 25/26**(`results/turtlebot3_house/20260811_1736_house_waffle_pi`), 소요 10.7분, goal 중앙값 17초. 계획 커버리지는 98.80% → 98.13%로 거의 그대로이고 순회 거리는 오히려 짧아졌습니다(94.85 → 76.45 m).
+
+  AWS 하우스도 같은 날 돌려 **25/26**이었습니다(`results/20260811_1757_aws_waffle_pi`, 소요 10.5분, goal 중앙값 18.6초). 수정 전 마지막 비교 가능한 실행은 21/26이었습니다. 다만 이 숫자는 조심해서 읽어야 합니다 — 기준선이 같은 세션에서 짝지어 측정한 값이 아니라 2026-07-30 기록이고, 이 도구로 돌린 과거 AWS 실행들이 20/26에서 24/26 사이에 흩어져 있어서 4개 차이는 이 맵이 원래 보이는 편차 범위 안입니다. AWS에서 확실한 것은 정적 결과 쪽입니다 — `TIGHT` 5개가 0개가 되고 커버리지는 96.2%로 유지됐으며, 대가는 19% 늘어난 순회 거리였습니다. 여유공간이 애초에 제약이 아니던 맵에서 inflation은 공짜가 아니지만, 적어도 goal을 깎아먹지는 않았습니다.
+
+  유일하게 남은 실패가 오히려 중요합니다. 배치 문제도, 이동 중 끼임도 아니고 지역 계획기(DWA) 문제였습니다. 기록된 bag으로 추적한 내용은 아래 "DWA가 개활지에서 오작동한다" 항목에 정리했습니다. 생성 단계가 여유공간을 강제하게 된 지금은 `diagnose_waypoints.py`로 설명되는 실패가 남지 않으므로, 진짜 원인이 오히려 또렷해졌습니다.
+
+  `FaRe_CPP/src/Scout.cpp`는 아직 예전 정사각 검사를 쓰므로 두 구현이 이 지점에서 갈라져 있습니다.
+
+- **DWA가 개활지에서 오작동함 (미해결; 수정 1회 시도 후 되돌림):** 배치 수정 뒤에도 남는 실패는 전부 지역 계획기가 **여유가 충분한 곳에서** 길을 잃는 것입니다. 기록된 bag으로 추적한 두 가지 형태입니다.
+
+  *목표에서 멀어지는 형태.* `results/turtlebot3_house/20260811_1736_house_waffle_pi`에서 goal #8 (6.95, 0.10)이 120초 `TIMEOUT`했습니다. waypoint는 멀쩡했고(여유공간 0.350 m, 접근 경로 0.79 m 안에 벽 없음) 계획도 멀쩡했습니다 — NavFn의 첫 plan은 1.4 m 직선이었고 120초 내내 끝점이 목표에 붙어 있었습니다. 로봇은 후진으로 **0.193 m**까지 접근해 x를 6.51 → 6.78로 좁혔지만 y가 0.190에 멈춘 채 목표 0.10까지 못 갔고, 이후 전진으로 뒤집혀 동쪽을 가리키는 계획을 두고 **서쪽으로 12 m**를 달렸습니다. tf 샘플 3719개 중 목표 0.15 m 안에 들어온 것은 하나도 없습니다.
+
+  마지막 0.19 m를 못 좁힌 이유는 스톡 `dwa_local_planner_params_waffle_pi.yaml`이 설명합니다. 시뮬레이션 가능한 최소 이동거리가 `min_vel_trans * sim_time` = 0.13 × 2.0 = **0.26 m**인데 `xy_goal_tolerance`는 **0.05 m**입니다. tolerance 안에서 끝나는 후보 궤적이 하나도 없으니 전부 지나치고, 지나친 뒤에는 반대 방향이 최고점을 받습니다. 이 형태는 짧은 goal에서만 나타납니다 — 주행/직선 거리 배율이 #8 26배, #16 38배, #6 9배인 반면 2.7 m 이상 goal은 전부 1.0~1.8배였습니다. 25개 goal 중 10개가 이전 waypoint에서 0.30 m 이내이고 3개는 **같은 셀에 방향만 다르기** 때문에 자주 걸립니다. `set_goals()`가 반복마다 거의 같은 프론티어 셀을 다시 고르기 때문입니다.
+
+  *제자리에서 진동하는 형태.* `results/turtlebot3_house/20260817_0152_arrival_radius`에서 로봇이 우측 wing의 (5.73, −2.74)에 멈춰 60초간 진동하다가, move_base가 `Robot is oscillating. Even after executing recovery behaviors.`를 내고 abort했습니다. 이후 goal 3개도 함께 무너졌습니다. 그 지점의 정적 여유공간은 0.492 m, 자체 local costmap 기준 북쪽 자유 통로 폭은 0.90 m, 유효한 96포즈·2.5 m 전역 경로가 내내 존재했습니다. 막는 것이 없었습니다.
+
+  **시도했다가 되돌린 수정.** `PatrolSim.send_goal()`이 순찰에 필요 없는 정밀도를 요구하지 않도록 바꿔 봤습니다. waypoint는 센서를 놓는 자리이고 `surveillance_range`가 5 m이므로, 로봇이 0.25 m 안에 들어오면 goal을 취소하고 제자리에서 FOV가 원하는 방향으로 돌리는 방식입니다. 메커니즘은 설계대로 작동했습니다 — 26개 중 22개가 그렇게 끝났고 오차는 0.038~0.240 m, 짧은 goal은 크게 단축됐습니다(#16 40.8초 → 2.2초, #12 13.5초 → 2.5초). **그런데도 결과는 25/26 대비 22/26으로 나빴습니다.**
+
+  이유가 배울 점입니다. 우측 wing에는 `x ≈ 6.30`의 장애물을 사이에 두고 나란한 통로가 둘 있습니다. 회전으로 goal을 끝내면 로봇이 waypoint에서 최대 0.25 m 떨어진 곳에 남는데, wing 탈출을 (6.25, −4.92) 대신 (6.06, −4.75)에서 시작한 것만으로 NavFn이 동쪽 통로(x ≈ 6.75, 성공했던 쪽)에서 서쪽 통로(x ≈ 5.75, 진동이 일어난 쪽)로 선택을 뒤집었습니다. 즉 이 변경이 실패를 *만든* 것이 아니라 통로 선택을 바꿨고, 그중 한쪽에 지역 계획기 결함이 숨어 있었습니다. 조건당 실행이 1회뿐이라 이를 일반적인 편차와 구분할 방법이 없고 22/26은 25/26보다 나쁘므로, 추측으로 유지하지 않고 되돌렸습니다.
+
+  다시 시도하기 전에 알아둘 것: 위 두 형태는 같은 용의자이고, 스톡 DWA 파라미터도 `set_goals()`의 근접 중복 waypoint도 아직 손대지 않았습니다. 재시도할 때는 조건마다 여러 번 돌려야 합니다 — 이 맵에서 단일 실행으로는 수정과 운을 구분할 수 없습니다.
 
    AWS Small House 맵 실측: **26개 waypoint 전부가 burger 풋프린트를 통과**했고, 최소 여유공간은 0.25 m로 풋프린트 반폭 0.105 m 대비 여유가 있었습니다. 즉 이 맵에서는 배치가 기하학적으로 주행 불가능한 게 아니며, 앞서의 불안정성은 통로 폭이 아니라 위 항목의 좌표/쿼터니언/짝맞춤 버그 때문이었습니다. 그 수정 후 waypoint 5개 순찰은 5/5 `SUCCEEDED`였습니다. 다만 단일 지점 검사라 다른 맵에서는 뚫릴 수 있으므로 이 검사는 유지할 가치가 있습니다.
 
@@ -253,4 +293,14 @@ python3 FaRe/trash_eval.py --range 5  # 낙관적인 최대 사거리 기준과 
 
    셋째 행을 주목하세요. inflation을 낮추거나 풋프린트를 부풀리는 것은 공짜가 아닙니다. 유효 반경 0.150 m까지 패딩하면 문제의 0.112 m 병목은 막히지만, 그 전까지 잘 지나다니던 0.180 m 지점에서 새로 끼였습니다.
 
-- **waypoint 여유공간은 goal 실패를 예측하지 못함 (가설 기각):** `find_frontier_cells()`가 좁은 곳에 waypoint를 놓는다고 의심하기 쉽지만 측정 결과는 다릅니다. 20/26 실행에서 실패한 goal의 여유공간 중앙값은 0.450 m, 성공한 goal은 0.480 m로 통계적으로 구분되지 않았고, *실패한* goal 중 하나는 1.412 m의 개활지에 있었습니다. 26개 waypoint 전부가 풋프린트를 통과합니다. 실패는 **이동 중에** 발생하며, global planner가 waypoint들이 피해 간 병목으로 경로를 잡기 때문입니다. 따라서 수정할 곳은 waypoint 배치가 아니라 navigation 설정과 복구 동작입니다.
+- **waypoint 여유공간이 goal 실패를 예측하는지는 맵에 따라 다름 (두 결과 모두 유효):** 처음 검증은 **AWS 하우스 + burger**에서 이뤄졌고 기각됐습니다. 20/26 실행에서 실패한 goal의 여유공간 중앙값은 0.450 m, 성공한 goal은 0.480 m로 구분되지 않았고, *실패한* goal 중 하나는 1.412 m의 개활지에 있었습니다. 모든 waypoint가 0.105 m 풋프린트를 여유 있게 통과했으니 그 맵에서는 여유공간이 제약 조건 자체가 아니었던 것이고, 실패는 **이동 중에** global planner가 waypoint들이 피해 간 병목으로 경로를 잡아서 생겼습니다.
+
+  **turtlebot3_house + waffle_pi**에서는 같은 측정이 정반대로, 그것도 아주 깨끗하게 나옵니다.
+
+  | 여유공간 판정 | `SUCCEEDED` | 실패 |
+  |---|---|---|
+  | `OK` (≥ 0.31 m) | **11** | 0 |
+  | `TIGHT` (0.155~0.31 m) | 1 | **13** |
+  | `UNREACHABLE` (< 0.155 m) | 0 | **1** |
+
+  두 결과 모두 사실입니다. house가 더 좁고(자유공간 여유공간 중앙값 0.450 m 대 0.552 m) waffle_pi가 burger보다 1.5배 넓기 때문에(0.155 m 대 0.105 m), 한쪽 맵에서 넉넉했던 waypoint가 다른 쪽에서는 costmap inflation 경사 안에 들어가 global planner가 아예 경로를 만들지 못합니다. 교훈은 둘 중 하나가 틀렸다는 게 아니라 **이 측정은 맵마다·로봇마다 다시 해야 한다**는 것이고, `diagnose_waypoints.py`가 바로 그 용도입니다. 위의 배치 수정은 house 쪽 문제를 해결하며, 이동 중 실패는 여전히 복구 동작과 costmap 오버라이드가 담당합니다.

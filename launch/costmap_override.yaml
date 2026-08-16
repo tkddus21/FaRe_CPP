@@ -20,6 +20,17 @@
 # robot at a 0.180 m spot it used to drive through and the run got worse
 # (4/26 goals vs 7/26). 0.020 buys the pinch without spending that margin.
 # Re-derive with FaRe/diagnose_waypoints.py if the map or the robot changes.
+#
+# Note the model this was derived for is NOT the one the patrols run. Everything
+# above is burger geometry, while TURTLEBOT3_MODEL is waffle_pi throughout - a
+# different shape, with its footprint origin near the front and an inscribed
+# radius of only 0.077 m. house_mapping.launch overrides this to 0.06 for that
+# reason; fare_navigation.launch does not, so a patrol runs a waffle_pi on a
+# burger-derived padding.
+#
+# Left as it is on purpose: the 24/26 AWS result the README quotes was measured
+# in exactly that combination, so it is empirically fine, just not re-derived.
+# If patrol goals start failing, this mismatch is the first thing to re-measure.
 footprint_padding: 0.020
 
 # --- Supporting changes --------------------------------------------------

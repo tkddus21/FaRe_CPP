@@ -1,10 +1,13 @@
 #!/usr/bin/env python3
 """Measures how much room each generated waypoint actually has around it.
 
-find_frontier_cells() only rejects cells whose square neighbourhood touches an
-obstacle within buffer_distance; it never checks whether the robot's footprint
-fits. This reports the true clearance (distance to the nearest obstacle) per
-waypoint so goal failures can be attributed to placement rather than to DWA.
+Reports the true clearance (distance to the nearest barrier) per waypoint, so
+goal failures can be attributed to placement rather than to DWA.
+
+Generation now enforces the same clearance it measures - see
+Exploration.placeable_mask() - so this is a check on a set, not a filter for one:
+it catches waypoints carried over from another map, generated before a config
+change, or produced by the C++ planner, which still uses the old square test.
 """
 
 import csv
@@ -49,8 +52,11 @@ def main():
     clearance = clearance_grid(grid_map, resolution)
 
     # DWA still has to fit the footprint plus some margin to manoeuvre, so flag a
-    # band above the hard limit as "tight" rather than calling it safe.
-    tight_limit = robot_radius * 2.0
+    # band above the hard limit as "tight" rather than calling it safe. This is the
+    # same threshold Scout_Multi_Processing.Exploration.placeable_mask() generates
+    # against, so a freshly generated set should report no TIGHT at all; any that
+    # appear came from a map or a config the waypoints were not generated for.
+    tight_limit = config['waypoint_clearance']
 
     rows = []
     for i, (row, col) in enumerate(wp):

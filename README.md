@@ -90,20 +90,32 @@ The house ships no map, so build one with gmapping. Two things not to do: do not
 sudo apt install ros-noetic-slam-gmapping     # not installed by default
 ```
 
-Four terminals, each with `export TURTLEBOT3_MODEL=waffle_pi`:
+Three terminals, each with `export TURTLEBOT3_MODEL=waffle_pi`:
 
 ```bash
 # T1  world + robot
 roslaunch ~/catkin_ws/src/FaRe_CPP/launch/house_sim.launch
-# T2  gmapping + rviz
-roslaunch turtlebot3_slam turtlebot3_slam.launch slam_methods:=gmapping
-# T3  drive every room until the walls close up
-roslaunch turtlebot3_teleop turtlebot3_teleop_key.launch
-# T4  save
+
+# T2  gmapping + move_base
+roslaunch ~/catkin_ws/src/FaRe_CPP/launch/house_mapping.launch open_rviz:=true
+
+# T3  find the rooms, then finish them, then save
+python3 ~/catkin_ws/src/FaRe_CPP/FaRe/explore_for_mapping.py
+python3 ~/catkin_ws/src/FaRe_CPP/FaRe/tour_house_for_mapping.py
 rosrun map_server map_saver -f ~/catkin_ws/src/FaRe_CPP/maps/turtlebot3_house/map
+
+# T3  put the garden back to unknown
+python3 ~/catkin_ws/src/FaRe_CPP/FaRe/crop_map_to_house.py \
+    ~/catkin_ws/src/FaRe_CPP/maps/turtlebot3_house/map.pgm
 ```
 
-Drive down the middle of wide rooms as well as around the walls: the waffle_pi's LDS stops at 3.5 m, and unmapped interior counts as a barrier — `diagnose_waypoints.py` treats unknown space as one, and waypoints are never placed there. Then run `check_map.py`, and `Surveillance.py` to generate the waypoints for this map.
+Then `check_map.py` to check it, and `Surveillance.py` to generate the waypoints for this map.
+
+**`house_mapping.launch` is the whole mapping stack** — robot_state_publisher, gmapping and move_base. Do not also run `turtlebot3_slam.launch`: both start nodes under the same names, roslaunch resolves that by killing the older one, and the survivor is left with no scan transform and a `/map` that never publishes again. It looks like move_base failing to come up, and the map built so far is gone.
+
+**Both driving scripts, in that order.** `explore_for_mapping.py` picks frontiers — free cells touching unmapped space — off gmapping's live `/map`, which makes it good at *finding* rooms and bad at *finishing* them: it stops as soon as no frontier is left, and a wall glimpsed once from four metres away satisfies that test while still being a smear. `tour_house_for_mapping.py` does the opposite. The house is a known static world, so it reads the room boxes out of `turtlebot3_gazebo`'s `model.sdf` and visits a 1.2 m grid over them — below gmapping's 3.0 m `maxUrange`, so every part of every room is seen from close enough for the scan to land. This is what replaces the old advice to drive down the middle of wide rooms by hand: unmapped interior counts as a barrier, and `diagnose_waypoints.py` never places a waypoint there. Running the tour after the explorer is safe — the same gmapping node keeps accumulating.
+
+**Why the crop.** The house's east wall is split between y = -0.40 and y = 0.50 and the south wall has a gap around x = 5.0..5.8, so the laser looks straight out onto the lawn and gmapping records the garden as free space with nothing to bound it. FaRe would then place waypoints out there and report coverage over an area that includes the grass. `crop_map_to_house.py` bounds the map by the rooms in `model.sdf` — measured at 100.7 → 93.4 sq.m on the bundled map. This is *not* the image-editor touch-up warned about above: nothing is resampled, the only value written is 205, which the map already uses for unseen space, and the origin is untouched, so the map still lines up with Gazebo world coordinates. It keeps a `.orig` copy and re-reads it on every run, so widening a margin and re-running works.
 
 ## Online Navigation(Patrolling)
 To execute patrols in the simulation, please make sure ROS and Gazebo are installed and follow these steps.
@@ -228,7 +240,35 @@ python3 FaRe/trash_eval.py --range 5  # compare against the optimistic full sens
 
 - **Sensor model is a flat 2D sector (by design, worth knowing):** the FOV is a 90° sector ray-cast on the occupancy grid, 0.05–5 m, with occlusion (rays stop at obstacles) but no vertical extent, no sensor height and no mounting geometry — the grid *is* the scan plane, at whatever height the map was built at. Headings are chosen from only four candidates, `[0, 90, 180, 270]` degrees, by picking whichever sees the most area. Note `surveillance_range` is 5 m while the waffle_pi's LDS reaches 3.5 m, so planned coverage is optimistic on both maps. Unknown cells neither block rays nor count as seen. (`FaRe_CPP/src/FOV.cpp` computes a vertical FOV from a camera model, but nothing calls it — the C++ planner uses the same flat sector.)
 
-- **Waypoint clearance doesn't account for robot footprint (open, but measured):** `find_frontier_cells()` in `FaRe/Scout_Multi_Processing.py` only checks that a candidate cell is `buffer_distance` cells (default 4, i.e. 0.2m at 0.05 resolution) away from the *nearest* obstacle cell — a single-point distance check, not a check that the corridor the robot has to actually drive through is wide enough. Use `FaRe/diagnose_waypoints.py` to measure the real clearance (distance transform, treating unknown space as a barrier too) per waypoint.
+- **Waypoint clearance didn't account for robot footprint (fixed):** `find_frontier_cells()` used to keep any candidate whose ±4-cell square neighbourhood held no wall. Two problems: the square measures *Chebyshev* distance, so it guaranteed only 5 cells = 0.25 m of clearance regardless of the robot; and it tested for walls (`0`) alone, so unmapped space (`205`) — including the boundary `crop_map_to_house.py` draws — was invisible to it. On the house map that put 14 of 26 waypoints exactly 0.25 m from a wall and one 0.05 m from the crop boundary.
+
+  Generation now runs on an **inflated map**, the planner's counterpart to move_base's costmap inflation: `Exploration.placeable_mask()` inflates every barrier (walls *and* unmapped cells) by `config['waypoint_clearance']` with one distance transform, and waypoints go only where that survives. `diagnose_waypoints.py` measures against the same constant, so a freshly generated set reports no `TIGHT` and no `UNREACHABLE` by construction — it becomes a check that a waypoint file matches its map, not a filter.
+
+  The mask constrains *positions only*. Frontier detection and `cast_fov()` still run on the real grid, so inflation costs no coverage: a cell the robot cannot stand in is still a cell it can see into.
+
+  `config['waypoint_clearance']` is 0.35 m, measured. Below it: a goal 0.30 m from a wall `ABORTED` while one at 0.32 m `SUCCEEDED`, so `robot_radius * 2` = 0.31 sits on the edge. Above it: at 0.45 m the house map's placeable area splits into two components. 0.35 keeps 64% of the house's free space placeable in one component (AWS 69%), with every free cell still within `surveillance_range` of somewhere a waypoint can go.
+
+  Measured end to end on the turtlebot3_house with a waffle_pi: **12/26 goals before, 25/26 after** (`results/turtlebot3_house/20260811_1736_house_waffle_pi`), 10.7 minutes, median goal 17 s. Planned coverage moved 98.80% → 98.13% and the tour got *shorter*, 94.85 → 76.45 m.
+
+  The AWS house was run the same day and scored **25/26** (`results/20260811_1757_aws_waffle_pi`), 10.5 minutes, median goal 18.6 s, against 21/26 on the last comparable run before the change. Read that one cautiously: the baseline is from 2026-07-30 rather than a paired same-session run, and earlier AWS runs with this toolchain have landed anywhere from 20/26 to 24/26, so a 4-goal gain is within the spread this map already shows. What is solid on AWS is the static result — 5 `TIGHT` waypoints became none, coverage held at 96.2% — bought with a 19% longer tour. Inflation is not free on a map whose clearance was never the binding constraint; it just turned out not to cost goals either.
+
+  The one remaining failure is the useful part, and it is neither a placement nor a transit-wedge problem — it is the local planner, traced from the recorded bag and written up under "DWA misbehaves in open space" below. With generation now enforcing the clearance, `diagnose_waypoints.py` can no longer explain a failed goal, and that is exactly what made the real cause legible.
+
+  Note `FaRe_CPP/src/Scout.cpp` still uses the old square test — the two implementations have diverged here.
+
+- **DWA misbehaves in open space (open; one fix tried and reverted):** the failures that survive the placement fix are all the local planner losing the plot somewhere it has plenty of room. Two instances, both traced from recorded bags:
+
+  *Driving away from the goal.* In `results/turtlebot3_house/20260811_1736_house_waffle_pi`, goal #8 at (6.95, 0.10) `TIMEOUT`ed after 120 s. The waypoint was fine (0.350 m clearance, no wall within 0.79 m of the approach) and so was the plan — NavFn's first was a 1.4 m straight line and its endpoint stayed on the goal for all 120 s. The robot reversed in to within **0.193 m**, closing x from 6.51 to 6.78 while y stuck at 0.190 against a target of 0.10, then flipped to forward and drove **12 m west**, away from a plan pointing east, before turning back 3.1 m short when the timeout fired. Over 3719 tf samples it never came within 0.15 m of the goal.
+
+  The stock `dwa_local_planner_params_waffle_pi.yaml` explains why it could not close the last 0.19 m: its shortest simulable move is `min_vel_trans * sim_time` = 0.13 × 2.0 = **0.26 m**, but `xy_goal_tolerance` is **0.05 m**. No candidate trajectory ends inside the tolerance, so every one overshoots, and past the goal the best-scoring direction flips. That form only bites on short goals — travelled / straight-line distance was 26× on #8, 38× on #16, 9× on #6, against 1.0–1.8× for every goal of 2.7 m or more. It matters because 10 of the 25 goals sit within 0.30 m of the previous one and three are on the *same cell* with only the heading differing; `set_goals()` re-picks near-identical frontier cells across iterations.
+
+  *Oscillating on the spot.* In `results/turtlebot3_house/20260817_0152_arrival_radius`, the robot stopped at (5.73, −2.74) in the right wing and sat there for 60 s until move_base reported `Robot is oscillating. Even after executing recovery behaviors.` and aborted — taking the next three goals down with it. It had 0.492 m of static clearance, a 0.90 m wide free corridor to the north in its own local costmap, and a valid 96-pose 2.5 m global plan the whole time. Nothing was in the way.
+
+  **The fix that was tried and reverted.** `PatrolSim.send_goal()` was changed to stop asking for precision the patrol does not need: a waypoint exists to place the sensor and `surveillance_range` is 5 m, so once the robot came within 0.25 m the goal was cancelled and the robot turned on the spot to the heading the FOV wanted. The mechanism worked exactly as designed — 22 of 26 goals finished that way, all within 0.038–0.240 m, and short goals collapsed (#16 40.8 s → 2.2 s, #12 13.5 s → 2.5 s). **The run still scored worse: 22/26 against 25/26.**
+
+  Why is the useful part. The right wing has two parallel corridors either side of an obstacle at x ≈ 6.30. Finishing a goal by rotating leaves the robot up to 0.25 m off the waypoint, and starting the wing exit from (6.06, −4.75) instead of (6.25, −4.92) was enough to flip NavFn from the east corridor (x ≈ 6.75, which worked) to the west one (x ≈ 5.75, where it oscillated). So the change did not *cause* the failure — it changed which corridor was taken, and one of them hides a local-planner pathology. With one run per condition there is no way to separate that from ordinary variance, and 22/26 is worse than 25/26, so it was reverted rather than kept on a hunch.
+
+  Still open, and worth knowing before trying again: the two failure forms above are the same suspect, and neither the stock DWA params nor `set_goals()`'s near-duplicate waypoints have been touched. Any retry should run each condition several times — single runs on this map do not separate a fix from a coin flip.
 
    Measured on the AWS Small House map: **all 26 waypoints cleared the burger footprint**, minimum clearance 0.25 m against a 0.105 m footprint half-width — so on this map the placement is not geometrically undrivable, and the earlier flakiness traced to the coordinate/quaternion/pairing bugs above rather than to gap width. After those fixes a 5-waypoint patrol scored 5/5 `SUCCEEDED`. The check is still worth keeping: it is a single-point test, so a different map can defeat it.
 
@@ -247,5 +287,15 @@ python3 FaRe/trash_eval.py --range 5  # compare against the optimistic full sens
 
    Note the third row: lowering inflation or padding the footprint is not a free win. Padding to an effective 0.150 m radius did block the one 0.112 m pinch, but then wedged the robot at a 0.180 m spot it had previously driven through fine.
 
-- **Waypoint clearance does not predict goal failure (hypothesis rejected):** it is tempting to blame `find_frontier_cells()` for placing waypoints in tight spots, but the measurement says otherwise. Over the 20/26 run, failed goals had a median clearance of 0.450 m and successful goals 0.480 m — statistically indistinguishable — and one *failed* goal sat in a 1.412 m open space. Every one of the 26 waypoints cleared the footprint. The failures happen **in transit**, where the global planner routes through pinches the waypoints themselves avoid, so fixing this belongs in the navigation config and in recovery behaviour, not in waypoint placement.
+- **Whether waypoint clearance predicts goal failure depends on the map (both results stand):** it was first tested on the **AWS house with a burger** and rejected. Over the 20/26 run, failed goals had a median clearance of 0.450 m and successful goals 0.480 m — statistically indistinguishable — and one *failed* goal sat in a 1.412 m open space. Every waypoint cleared the 0.105 m footprint with room over, so clearance was simply not the binding constraint there; the failures happened **in transit**, where the global planner routed through pinches the waypoints themselves avoided.
+
+  On the **turtlebot3_house with a waffle_pi** the same measurement comes out the opposite way, and cleanly:
+
+  | clearance verdict | `SUCCEEDED` | failed |
+  |---|---|---|
+  | `OK` (≥ 0.31 m) | **11** | 0 |
+  | `TIGHT` (0.155–0.31 m) | 1 | **13** |
+  | `UNREACHABLE` (< 0.155 m) | 0 | **1** |
+
+  Both results are real. The house is tighter (median free-space clearance 0.450 m vs 0.552 m) and the waffle_pi is half again as wide as a burger (0.155 m vs 0.105 m), so waypoints that were comfortable on one map sit inside the costmap's inflation gradient on the other and the global planner cannot produce a path to them at all. The lesson is not that either measurement was wrong but that **this one has to be re-run per map and per robot** — which is what `diagnose_waypoints.py` is for. The placement fix above addresses the house case; recovery behaviour and the costmap overrides still address the in-transit case.
    

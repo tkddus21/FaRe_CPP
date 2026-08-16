@@ -5,13 +5,20 @@ import yaml
 import time
 from IPython.display import clear_output
 from scipy.spatial.distance import pdist, squareform
+from scipy.ndimage import distance_transform_edt
 from itertools import permutations
 from MAP import Map_generator
+from config import config
 import multiprocessing
 from Multi_Processing import process_frontier
 import random
 import math
 map_generator = Map_generator()
+
+# Cells a robot can never occupy: walls, and unmapped space, which is not free
+# just because nothing was seen there. Everything else (254 unexplored free,
+# 150 already surveyed) is drivable.
+BARRIER_VALUES = (0, 205)
 
 
 
@@ -57,21 +64,22 @@ class Scout:
 
         return best_grid, best_angle*(math.pi / 180)
 
-    def find_frontier_cells(self,grid_map, explored_value, unexplored_value, obstacle_value=0, buffer_distance=4):
-        # buffer_distance only checks distance to the *nearest* obstacle cell, not corridor
-        # width along the robot's actual path — see README "Known Limitations" for details
-        # (waypoints can land in gaps too tight for the robot's real footprint + costmap inflation).
+    def find_frontier_cells(self, grid_map, explored_value, unexplored_value, placeable):
+        """Unexplored cells bordering surveyed space that the robot can actually reach.
+
+        `placeable` is the inflated-map mask from Exploration.placeable_mask(): a
+        candidate is kept only where the footprint fits with waypoint_clearance to
+        spare. It replaces an earlier square-neighbourhood test that measured
+        Chebyshev distance to the nearest *wall* and ignored unmapped space, which
+        put waypoints 0.25 m from walls and one 0.05 m from a map boundary. Nothing
+        move_base could plan a path to - see README "Known Limitations".
+
+        The mask filters positions only. Frontier detection below still runs on the
+        real grid, and so does cast_fov(), so inflation costs no coverage: cells the
+        robot cannot stand in are still cells it can see into.
+        """
         rows, cols = grid_map.shape
         frontier_cells = []
-
-        def is_within_buffer(position):
-            for dx in range(-buffer_distance, buffer_distance + 1):
-                for dy in range(-buffer_distance, buffer_distance + 1):
-                    nx, ny = position[0] + dx, position[1] + dy
-                    if 0 <= nx < rows and 0 <= ny < cols:
-                        if grid_map[nx, ny] == obstacle_value:
-                            return True
-            return False
 
         for i in range(rows):
             for j in range(cols):
@@ -81,7 +89,7 @@ class Scout:
                         (j > 0 and grid_map[i, j-1] == explored_value) or
                         (j < cols - 1 and grid_map[i, j+1] == explored_value)):
 
-                        if not is_within_buffer((i, j)):
+                        if placeable[i, j]:
                             frontier_cells.append((i, j))
 
         return frontier_cells
@@ -92,8 +100,30 @@ class Exploration:
         self.free_cells = free_cells
         self.state = state
         self.yaml_data = yaml_data
-        self.scout = Scout() 
+        self.scout = Scout()
+        # Computed once from the map as loaded, not per iteration: surveying only
+        # rewrites free cells (254 -> 150), so the barriers this depends on never
+        # move while set_goals() runs.
+        self.placeable = self.placeable_mask(grid_map, yaml_data)
         print('range:', self.surveillance_range )
+
+    @staticmethod
+    def placeable_mask(grid_map, yaml_data):
+        """Cells far enough from every barrier to put a waypoint on.
+
+        The planner's counterpart to move_base's costmap inflation: rather than
+        checking each candidate against its neighbourhood, inflate the barriers once
+        and place waypoints only on what survives. One distance transform replaces a
+        square scan per free cell per iteration, and it measures true Euclidean
+        distance instead of the Chebyshev distance a square neighbourhood implies.
+
+        Uses the same computation as diagnose_waypoints.clearance_grid(), against
+        the same config['waypoint_clearance'], so what this generates is what that
+        script passes.
+        """
+        barrier = np.isin(grid_map, BARRIER_VALUES)
+        clearance = distance_transform_edt(~barrier) * yaml_data['resolution']
+        return clearance >= config['waypoint_clearance']
     def surveillance(self, iteration, frontiers, graph, area):
         
         with multiprocessing.Pool() as pool:
@@ -117,7 +147,10 @@ class Exploration:
 
         for i in range(steps):
             start_time = time.time()
-            frontiers = current_pos if i == 0 else self.scout.find_frontier_cells(graph, explored_value, unexplored_value)
+            # i == 0 takes the configured start verbatim rather than a frontier, so
+            # the mask cannot strand a patrol whose start sits in a tight spot.
+            frontiers = current_pos if i == 0 else self.scout.find_frontier_cells(
+                graph, explored_value, unexplored_value, self.placeable)
             #file_path = f"D:\srinika\Research_Track\maps\cpp_house\goals\goal{i}.txt"
 
             #with open(file_path, 'r') as file:

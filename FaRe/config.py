@@ -129,6 +129,23 @@ config = {
     # diagnose_waypoints.py judges clearance against the right footprint.
     "robot_radius": 0.155,  # metres
 
+    # Minimum distance from a waypoint to any barrier - a wall (0) or an unmapped
+    # cell (205), which the robot cannot be driven through either. Waypoints are
+    # only placed on a map inflated by this, the planner's analogue of move_base's
+    # costmap inflation. diagnose_waypoints.py judges against the same value, so a
+    # freshly generated set reports no TIGHT and no UNREACHABLE by construction.
+    #
+    # Measured on the turtlebot3_house with a waffle_pi. The lower bound comes from
+    # a patrol log: a goal 0.30 m from a wall ABORTED, one at 0.32 m SUCCEEDED, so
+    # robot_radius * 2 = 0.31 sits exactly on the edge. The upper bound is
+    # connectivity: at 0.45 m the placeable area of this map splits into two
+    # components and half the house becomes unreachable from the other half. 0.35
+    # keeps 64% of the free space placeable in ONE component, and every free cell
+    # stays within surveillance_range of somewhere a waypoint can go.
+    #
+    # Re-derive with diagnose_waypoints.py if the robot or the map changes.
+    "waypoint_clearance": 0.35,  # metres
+
     "trash_detection_range": 5.0, # metres; shorter than surveillance_range, which is optimistic for recognising objects
 
 }
