@@ -6,6 +6,10 @@ __pycache__/
 # Copy a run you want to keep into experiments/ instead.
 FaRe/results/
 
+# crop_map_to_house.py keeps the pre-crop map beside the cropped one so a re-run
+# starts from what gmapping recorded rather than from its own output. Regenerable.
+*.orig
+
 # C++ build output (FaRe_CPP/output/ is deliberately tracked — sample run kept in-repo)
 FaRe_CPP/build/
 
