@@ -231,6 +231,29 @@ python3 FaRe/trash_eval.py --range 5  # compare against the optimistic full sens
 `trash_eval.py` is AWS-only: `FaRe/trash_positions.txt` holds grid cells for that map, which index meaningless spots on any other.
 `Surveillance.py` also writes `results/coverage_map.png` (orange = seen by the sensor, red = free space missed) and appends the coverage percentage to `results/metrics.csv`. Object positions for `trash_eval.py` live in `FaRe/trash_positions.txt` as `row, col` grid cells.
 
+### Planned coverage is not achieved coverage
+
+Everything above is computed **at planning time**. `report_coverage()` unions the FOV of every waypoint as if the robot had reached all of them facing the right way, and `trash_eval.py` says so in its own docstring — "purely geometric". A run that scores 25/26 did not reach all of them. Quoting that percentage next to a goal-success count invites reading the first as if it were the second.
+
+```bash
+python3 FaRe/achieved_coverage.py results/turtlebot3_house/<run_dir>
+python3 FaRe/achieved_coverage.py results/<run_dir> --along-path   # also count what was swept while driving
+```
+
+It replays the same model — `Scout.cast_fov()`, the same `surveillance_range`, the same grid — from the pose the robot actually held when each goal ended, read out of that run's `patrol.bag` via tf (`map` → `odom` → `base_footprint`, not `/amcl_pose`, which publishes at ~1.2 Hz and is stale by up to a metre at full speed). It writes `achieved_coverage.csv` (per goal: actual pose, position error, heading error, new cells seen) and `achieved_coverage.png` (green = both, orange = planned but not achieved, blue = achieved only, red = neither).
+
+Measured on the turtlebot3_house, same waypoint set where the goal count differs:
+
+| run | goals | planned | **achieved** | median pose error |
+|---|---|---|---|---|
+| before the placement fix | 12/26 | 98.8% | **79.4%** | 0.115 m |
+| current | 25/26 | 98.1% | **97.9%** | 0.026 m |
+| AWS, current | 25/26 | 96.2% | **95.5%** | 0.024 m |
+
+The planned figure barely moved between the first two rows — it describes the waypoints, and those were fine either way. What the placement fix actually bought is in the achieved column: **79.4% → 97.9%**. That is the number the goal count was standing in for.
+
+Note the median pose error is a useful check on its own: 0.026 m sits just inside DWA's `xy_goal_tolerance` of 0.05 m, which is what arriving properly looks like.
+
 ## Known Limitations
 
 - **`PatrolSim.py` coordinate conversion (fixed):** `grid_to_world_coords()` previously transposed row/col and didn't account for `map_server`'s vertical flip (pgm row 0 = top of image = *max* world y, with the map origin at the bottom-left pixel), so goals were sent to the wrong physical location. Confirmed by testing: on an open map every waypoint failed or landed in the wrong spot before the fix, and 13-14/14 succeeded after it. Also fixed in the same pass: an invalid goal quaternion (`orientation.z = theta` instead of a real yaw quaternion), a success check that trusted `wait_for_result()` alone (which returns `True` even for `ABORTED` goals), and an `IndexError` from `wp` (waypoints, includes a final return-to-start point) being one longer than `ori` (orientations).
@@ -256,19 +279,11 @@ python3 FaRe/trash_eval.py --range 5  # compare against the optimistic full sens
 
   Note `FaRe_CPP/src/Scout.cpp` still uses the old square test — the two implementations have diverged here.
 
-- **DWA misbehaves in open space (open; one fix tried and reverted):** the failures that survive the placement fix are all the local planner losing the plot somewhere it has plenty of room. Two instances, both traced from recorded bags:
-
-  *Driving away from the goal.* In `results/turtlebot3_house/20260811_1736_house_waffle_pi`, goal #8 at (6.95, 0.10) `TIMEOUT`ed after 120 s. The waypoint was fine (0.350 m clearance, no wall within 0.79 m of the approach) and so was the plan — NavFn's first was a 1.4 m straight line and its endpoint stayed on the goal for all 120 s. The robot reversed in to within **0.193 m**, closing x from 6.51 to 6.78 while y stuck at 0.190 against a target of 0.10, then flipped to forward and drove **12 m west**, away from a plan pointing east, before turning back 3.1 m short when the timeout fired. Over 3719 tf samples it never came within 0.15 m of the goal.
+- **DWA drives away from sub-metre goals (open):** the failure that survives the placement fix is the local planner losing the plot somewhere it has plenty of room. Traced from a recorded bag: in `results/turtlebot3_house/20260811_1736_house_waffle_pi`, goal #8 at (6.95, 0.10) `TIMEOUT`ed after 120 s. The waypoint was fine (0.350 m clearance, no wall within 0.79 m of the approach) and so was the plan — NavFn's first was a 1.4 m straight line and its endpoint stayed on the goal for all 120 s. The robot reversed in to within **0.193 m**, closing x from 6.51 to 6.78 while y stuck at 0.190 against a target of 0.10, then flipped to forward and drove **12 m west**, away from a plan pointing east, before turning back 3.1 m short when the timeout fired. Over 3719 tf samples it never came within 0.15 m of the goal.
 
   The stock `dwa_local_planner_params_waffle_pi.yaml` explains why it could not close the last 0.19 m: its shortest simulable move is `min_vel_trans * sim_time` = 0.13 × 2.0 = **0.26 m**, but `xy_goal_tolerance` is **0.05 m**. No candidate trajectory ends inside the tolerance, so every one overshoots, and past the goal the best-scoring direction flips. That form only bites on short goals — travelled / straight-line distance was 26× on #8, 38× on #16, 9× on #6, against 1.0–1.8× for every goal of 2.7 m or more. It matters because 10 of the 25 goals sit within 0.30 m of the previous one and three are on the *same cell* with only the heading differing; `set_goals()` re-picks near-identical frontier cells across iterations.
 
-  *Oscillating on the spot.* In `results/turtlebot3_house/20260817_0152_arrival_radius`, the robot stopped at (5.73, −2.74) in the right wing and sat there for 60 s until move_base reported `Robot is oscillating. Even after executing recovery behaviors.` and aborted — taking the next three goals down with it. It had 0.492 m of static clearance, a 0.90 m wide free corridor to the north in its own local costmap, and a valid 96-pose 2.5 m global plan the whole time. Nothing was in the way.
-
-  **The fix that was tried and reverted.** `PatrolSim.send_goal()` was changed to stop asking for precision the patrol does not need: a waypoint exists to place the sensor and `surveillance_range` is 5 m, so once the robot came within 0.25 m the goal was cancelled and the robot turned on the spot to the heading the FOV wanted. The mechanism worked exactly as designed — 22 of 26 goals finished that way, all within 0.038–0.240 m, and short goals collapsed (#16 40.8 s → 2.2 s, #12 13.5 s → 2.5 s). **The run still scored worse: 22/26 against 25/26.**
-
-  Why is the useful part. The right wing has two parallel corridors either side of an obstacle at x ≈ 6.30. Finishing a goal by rotating leaves the robot up to 0.25 m off the waypoint, and starting the wing exit from (6.06, −4.75) instead of (6.25, −4.92) was enough to flip NavFn from the east corridor (x ≈ 6.75, which worked) to the west one (x ≈ 5.75, where it oscillated). So the change did not *cause* the failure — it changed which corridor was taken, and one of them hides a local-planner pathology. With one run per condition there is no way to separate that from ordinary variance, and 22/26 is worse than 25/26, so it was reverted rather than kept on a hunch.
-
-  Still open, and worth knowing before trying again: the two failure forms above are the same suspect, and neither the stock DWA params nor `set_goals()`'s near-duplicate waypoints have been touched. Any retry should run each condition several times — single runs on this map do not separate a fix from a coin flip.
+  Untouched so far: the stock DWA params, and `set_goals()`'s habit of emitting near-duplicate waypoints in the first place. Whatever gets tried, run each condition several times — single runs on this map do not separate a fix from a coin flip.
 
    Measured on the AWS Small House map: **all 26 waypoints cleared the burger footprint**, minimum clearance 0.25 m against a 0.105 m footprint half-width — so on this map the placement is not geometrically undrivable, and the earlier flakiness traced to the coordinate/quaternion/pairing bugs above rather than to gap width. After those fixes a 5-waypoint patrol scored 5/5 `SUCCEEDED`. The check is still worth keeping: it is a single-point test, so a different map can defeat it.
 
